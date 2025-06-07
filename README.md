@@ -1,1 +1,5 @@
 # CV_PROJ_24_25
+
+### README PROGETTO
+
+Descrizione
