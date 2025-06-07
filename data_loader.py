@@ -37,7 +37,7 @@ class InputData:
                 self.id_idx_list.append(idx)
                 idx += 1
         self.data_size = len(self.id_list)
-        log.info(f"Loaded, train data_size = {self.data_size}")
+        log.info(f"Loaded, train_data size = {self.data_size}")
 
         log.info('Loading %s ...' % self.test_list)
         self.__cur_test_id = 0  # for training
@@ -54,7 +54,7 @@ class InputData:
                 self.id_test_idx_list.append(idx)
                 idx += 1
         self.test_data_size = len(self.id_test_list)
-        log.info(f"Loaded, test data size = {self.test_data_size}")
+        log.info(f"Loaded, test_data size = {self.test_data_size}")
 
     def next_batch_scan(self, batch_size, grd_noise=360, FOV=360):
         if self.__cur_test_id >= self.test_data_size:

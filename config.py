@@ -1,11 +1,13 @@
 config = {
     "name": "MODEL CONFIGURATION",
     "epochs":10,
-    "lr":0.0001,
+    "learning_rate":0.0001,
     "batch_size":8,
     "loss_weight":10.0,
     "train_grd_FOV": 360,
-    "test_grd_FOV": 0
+    "test_grd_FOV": 0,
+    "dropout_ratio": 0.2,
+    "no_layer_vgg_non_trainable": 10
 }
 
 folders_and_files = {
