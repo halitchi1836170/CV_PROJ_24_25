@@ -4,6 +4,7 @@ from torchvision.models import vgg16, VGG16_Weights
 from config import *
 import torch.nn.functional as F
 from features_manager import ProcessFeatures
+from logger import log
 
 class VGGGroundBranch(nn.Module):
     """
@@ -13,7 +14,7 @@ class VGGGroundBranch(nn.Module):
     def __init__(self):
         super(VGGGroundBranch, self).__init__()
         # Load pretrained VGG16 and extract features
-        vgg = vgg16(weights=VGG16_Weights.DEFAULT)
+        vgg = vgg16(weights=config["vgg_default_weights"])
         self.features = nn.ModuleList(list(vgg.features.children()))
         # Freeze early layers (equivalent to trainable=False for layers <= 9)
         for i, layer in enumerate(self.features[:config["no_layer_vgg_non_trainable"]]):
@@ -38,11 +39,22 @@ class VGGGroundBranch(nn.Module):
             if i >= len(self.features) - 6:
                 break
         # Additional convolutional layers
+        x = self.warp_pad_columns(x,1)
         x = self.relu(self.conv_extra1(x))
+        x = self.warp_pad_columns(x, 1)
         x = self.relu(self.conv_extra2(x))
+        x = self.warp_pad_columns(x, 1)
         x = self.relu(self.conv_extra3(x))
         return x
 
+    def warp_pad_columns(self,x_input, n=1):
+        # Concatenazione laterale (wrap lungo larghezza)
+        left = x_input[:, :, :, -n:]
+        right = x_input[:, :, :, :n]
+        x = torch.cat([left, x_input, right], dim=3)  # lungo W
+        # Padding verticale (altezza)
+        x_res = F.pad(x, pad=(0, 0, n, n))  # pad=(left, right, top, bottom)
+        return x_res
 
 class VGGSatelliteBranch(nn.Module):
     """
@@ -53,7 +65,7 @@ class VGGSatelliteBranch(nn.Module):
         super(VGGSatelliteBranch, self).__init__()
         self.name_suffix = name_suffix
         # Load pretrained VGG16 and extract features
-        vgg = vgg16(weights=VGG16_Weights.DEFAULT)
+        vgg = vgg16(weights=config["vgg_default_weights"])
         self.features = nn.ModuleList(list(vgg.features.children()))
         # Freeze early layers (equivalent to trainable=False for layers <= 9)
         for i, layer in enumerate(self.features[:config["no_layer_vgg_non_trainable"]]):
@@ -91,7 +103,9 @@ class VGGSatelliteBranch(nn.Module):
                 break
 
         # Additional convolutional layers with circular padding
+        #log.info(f"x.shape before warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
+        #log.info(f"x.shape after warp and pad: {x.shape}")
         x = self.relu(self.conv_extra1(x))
 
         x = self.warp_pad_columns(x, 1)

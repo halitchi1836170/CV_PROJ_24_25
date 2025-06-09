@@ -5,6 +5,7 @@ from logger import log
 from data_loader import InputData
 from utils import *
 from model import GroundToAerialMatchingModel
+import numpy as np
 
 def main():
     log.info("Starting project...")
@@ -28,7 +29,7 @@ def main():
     log.info(get_header_title("END",new_line=True))
 
     if args_mode == "TRAIN":
-        log.info(get_header_title("TRAINING MODE"))
+        log.info(get_header_title("INSTANTIATION OF THE MODEL"))
 
         #INSTANTIATION OF CONSTANTS FROM CONFIGURATION FILE
         train_grd_FOV = config["train_grd_FOV"]
@@ -36,11 +37,34 @@ def main():
         max_width = images_params["max_width"]
         learning_rate = config["learning_rate"]
 
-
         width = int(train_grd_FOV / max_angle * max_width)
 
         #DEFINITION OF THE MODEL
+        log.info("Creation of the model...")
         model = GroundToAerialMatchingModel()
+        log.info("Model created, summary: ")
+        get_model_summary_simple(model)
+        log.info(get_header_title("END", new_line=True))
+
+        log.info(get_header_title("DEFINITION OF THE INPUT DATA"))
+        grd_x = torch.zeros([2,3, int(max_width/4), width])                             #ORDINE CAMBIATO: B (batch size)-C (channels)-H-W
+        sat_x = torch.zeros([2,3, int(max_width/2), max_width])
+        polar_sat_x = torch.zeros([2,3, int(max_width/4), max_width])
+        segmap_x = torch.zeros([2,3, int(max_width/4), max_width])
+        log.info(f"Ground (zero) input matrix dimension: {grd_x.shape}")
+        log.info(f"Polar satellite (zero) input matrix dimension: {polar_sat_x.shape}")
+        log.info(f"Segmentation (zero) input matrix dimension: {segmap_x.shape}")
+        log.info(get_header_title("END", new_line=True))
+
+        log.info(get_header_title("FIRST FEATURES"))
+        log.info("Calculating (forward pass) first features (zeros as input) ...")
+        grd_features, sat_features, segmap_features = model(grd_x, polar_sat_x, segmap_x, return_features=True)
+        log.info(f"Ground features (zero input) matrix dimension: {grd_features.shape}")
+        log.info(f"Polar satellite features (zero input) matrix dimension: {sat_features.shape}")
+        log.info(f"Segmentation features (zero input) matrix dimension: {segmap_features.shape}")
+        sat_features = torch.concat([sat_features, segmap_features], dim=1)
+        log.info(f"Concatenated Satellite and Segmentation features (zero input) matrix dimension: {sat_features.shape}")
+
 
         #DEFINITION OF THE OPTIMIZER
         log.info("Definition of optimizer...\n")
