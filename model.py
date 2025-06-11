@@ -17,18 +17,19 @@ class VGGGroundBranch(nn.Module):
         vgg = vgg16(weights=config["vgg_default_weights"])
         self.features = nn.ModuleList(list(vgg.features.children()))
         # Freeze early layers (equivalent to trainable=False for layers <= 9)
-        for i, layer in enumerate(self.features[:config["no_layer_vgg_non_trainable"]]):
+        for i, layer in enumerate(self.features[:config["no_layer_vgg_non_trainable"]+1]):
             for param in layer.parameters():
                 param.requires_grad = False
         # Dropout layers for regularization
         self.dropout = nn.Dropout(config["dropout_ratio"])
         # Additional convolutional layers
-        self.conv_extra1 = nn.Conv2d(images_params["max_width"], int(images_params["max_width"]/2), kernel_size=3, stride=(2, 1), padding=1)
-        self.conv_extra2 = nn.Conv2d(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1), padding=1)
-        self.conv_extra3 = nn.Conv2d(int(images_params["max_width"]/8), int(images_params["max_width"]/32), kernel_size=3, stride=(1, 1), padding=1)
+        self.conv_extra1 = nn.Conv2d(images_params["max_width"], int(images_params["max_width"]/2), kernel_size=3, stride=(2, 1), padding="valid")
+        self.conv_extra2 = nn.Conv2d(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1), padding="valid")
+        self.conv_extra3 = nn.Conv2d(int(images_params["max_width"]/8), int(images_params["max_width"]/32), kernel_size=3, stride=(1, 1), padding="valid")
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
+        x = x.permute(0, 3, 1, 2)
         # Forward through VGG features
         for i, layer in enumerate(self.features):
             x = layer(x)
@@ -36,7 +37,7 @@ class VGGGroundBranch(nn.Module):
             if i in [17, 19, 21]:  # block4_conv1, block4_conv2, block4_conv3
                 x = self.dropout(x)
             # Stop before last 6 layers (equivalent to break at len-6)
-            if i >= len(self.features) - 6:
+            if i >= len(self.features) - config["no_layer_vgg_non_trainable"]:
                 break
         # Additional convolutional layers
         x = self.warp_pad_columns(x,1)
@@ -45,16 +46,15 @@ class VGGGroundBranch(nn.Module):
         x = self.relu(self.conv_extra2(x))
         x = self.warp_pad_columns(x, 1)
         x = self.relu(self.conv_extra3(x))
+        x = x.permute(0, 2, 3, 1)
         return x
 
-    def warp_pad_columns(self,x_input, n=1):
+    def warp_pad_columns(self,x, n=1):
         # Concatenazione laterale (wrap lungo larghezza)
-        left = x_input[:, :, :, -n:]
-        right = x_input[:, :, :, :n]
-        x = torch.cat([left, x_input, right], dim=3)  # lungo W
-        # Padding verticale (altezza)
-        x_res = F.pad(x, pad=(0, 0, n, n))  # pad=(left, right, top, bottom)
-        return x_res
+        out = torch.cat([x[:, :, :, -n:], x, x[:, :, :, :n]], dim=3)
+        # Add symmetric padding for height
+        out = F.pad(out, (0, 0, n, n), mode='constant', value=0)
+        return out
 
 class VGGSatelliteBranch(nn.Module):
     """
@@ -68,7 +68,7 @@ class VGGSatelliteBranch(nn.Module):
         vgg = vgg16(weights=config["vgg_default_weights"])
         self.features = nn.ModuleList(list(vgg.features.children()))
         # Freeze early layers (equivalent to trainable=False for layers <= 9)
-        for i, layer in enumerate(self.features[:config["no_layer_vgg_non_trainable"]]):
+        for i, layer in enumerate(self.features[:config["no_layer_vgg_non_trainable"]+1]):
             for param in layer.parameters():
                 param.requires_grad = False
         # Dropout layers for regularization
@@ -90,30 +90,38 @@ class VGGSatelliteBranch(nn.Module):
         return out
 
     def forward(self, x):
+        x = x.permute(0, 3, 1, 2)
         # Forward through VGG features
         for i, layer in enumerate(self.features):
             x = layer(x)
 
             # Add dropout after specific block4 conv layers
             if i in [17, 19, 21]:  # block4_conv1, block4_conv2, block4_conv3
+                log.debug("Dropping connections...")
                 x = self.dropout(x)
 
+            log.debug(f"At layer {i+1} x shape: {x.shape}")
+
             # Stop before last 6 layers
-            if i >= len(self.features) - 6:
+            if i >= len(self.features) - config["no_layer_vgg_non_trainable"]:
                 break
 
         # Additional convolutional layers with circular padding
-        #log.info(f"x.shape before warp and pad: {x.shape}")
+        log.debug(f"x.shape before 1st warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
-        #log.info(f"x.shape after warp and pad: {x.shape}")
+        log.debug(f"x.shape after 1st warp and pad: {x.shape}")
         x = self.relu(self.conv_extra1(x))
-
+        log.debug(f"x.shape before 2nd warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
+        log.debug(f"x.shape after 2nd warp and pad: {x.shape}")
         x = self.relu(self.conv_extra2(x))
-
+        log.debug(f"x.shape before 3rd warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
+        log.debug(f"x.shape after 3rd warp and pad: {x.shape}")
         x = self.relu(self.conv_extra3(x))
-
+        log.debug(f"Returning x shape (before permutation): {x.shape}")
+        x=x.permute(0,2,3,1)
+        log.debug(f"Returning x shape (after permutation): {x.shape}")
         return x
 
 

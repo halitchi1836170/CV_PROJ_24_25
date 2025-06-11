@@ -47,10 +47,10 @@ def main():
         log.info(get_header_title("END", new_line=True))
 
         log.info(get_header_title("DEFINITION OF THE INPUT DATA"))
-        grd_x = torch.zeros([2,3, int(max_width/4), width])                             #ORDINE CAMBIATO: B (batch size)-C (channels)-H-W
-        sat_x = torch.zeros([2,3, int(max_width/2), max_width])
-        polar_sat_x = torch.zeros([2,3, int(max_width/4), max_width])
-        segmap_x = torch.zeros([2,3, int(max_width/4), max_width])
+        grd_x = torch.zeros([2, int(max_width/4), width,3])                             #ORDINE CAMBIATO: B (batch size)-C (channels)-H-W
+        sat_x = torch.zeros([2, int(max_width/2), max_width,3])
+        polar_sat_x = torch.zeros([2, int(max_width/4), max_width,3])
+        segmap_x = torch.zeros([2, int(max_width/4), max_width,3])
         log.info(f"Ground (zero) input matrix dimension: {grd_x.shape}")
         log.info(f"Polar satellite (zero) input matrix dimension: {polar_sat_x.shape}")
         log.info(f"Segmentation (zero) input matrix dimension: {segmap_x.shape}")
@@ -62,7 +62,7 @@ def main():
         log.info(f"Ground features (zero input) matrix dimension: {grd_features.shape}")
         log.info(f"Polar satellite features (zero input) matrix dimension: {sat_features.shape}")
         log.info(f"Segmentation features (zero input) matrix dimension: {segmap_features.shape}")
-        sat_features = torch.concat([sat_features, segmap_features], dim=1)
+        sat_features = torch.concat([sat_features, segmap_features], dim=3)
         log.info(f"Concatenated Satellite and Segmentation features (zero input) matrix dimension: {sat_features.shape}")
 
 
