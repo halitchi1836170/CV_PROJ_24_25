@@ -1,6 +1,7 @@
 import torch.nn as nn
 import torch.nn.functional as F
 import torch
+from logger import log
 
 class ProcessFeatures(nn.Module):
     """
@@ -16,7 +17,7 @@ class ProcessFeatures(nn.Module):
 
     def corr_crop_distance(self, sat_vgg, grd_vgg):
         corr_out, corr_orien = self.corr(sat_vgg, grd_vgg)
-        sat_cropped = self.crop_sat(sat_vgg, corr_orien, grd_vgg.get_shape().as_list()[2])
+        sat_cropped = self.crop_sat(sat_vgg, corr_orien, grd_vgg.size()[2])
         # shape = [batch_sat, batch_grd, h, grd_width, channel]
 
         norm = torch.sqrt(torch.sum(sat_cropped ** 2, dim=[2, 3, 4], keepdim=True) + 1e-8)
@@ -40,7 +41,12 @@ class ProcessFeatures(nn.Module):
         assert s_h == g_h, s_c == g_c  # devono avere la stessa altezza e lo stesso numero di canali
 
         n = g_w - 1
-        x = self.warp_pad_columns(sat_matrix, n)
+
+        def inner_warp_pad_columns(x, n):
+            out = torch.concat([x, x[:, :, :n, :]], dim=2)
+            return out
+
+        x = inner_warp_pad_columns(sat_matrix, n)
 
         correlations = []
         for i in range(batch_sat):
@@ -62,30 +68,38 @@ class ProcessFeatures(nn.Module):
             correlations.append(sat_corr)
 
         # Concatena tutti i risultati satellite
-        out = torch.cat(correlations, dim=0)  # [batch_sat, batch_grd, 1, s_w]
-
+        out = torch.concat(correlations, dim=0)  # [batch_sat, batch_grd, 1, s_w]
+       #log.debug(f"out shape before squeeze: {out.shape}")
         # Rimuovi la dimensione dell'altezza (che dovrebbe essere 1)
-        out = out.squeeze(2)  # [batch_sat, batch_grd, s_w]
-
+        out = out.squeeze(3)  # [batch_sat, batch_grd, s_w]
+       #log.debug(f"out shape after squeeze: {out.shape}")
         # Trova l'orientamento con correlazione massima
         orien = torch.argmax(out, dim=2)  # [batch_sat, batch_grd]
-
+        #log.debug(f"orien: {orien}")
+        #log.debug(f"orien.long: {orien.long()}")
         return out, orien.long()
 
-
+    def torch_shape(self, x, rank):
+       #log.debug(f"shape of x in input: {x.shape}")
+        assert len(x.shape) == rank, f"Expected rank {rank}, but got {len(x.shape)}"
+        return list(x.shape)
 
     def crop_sat(self, sat_matrix, orien, grd_width):
-        batch_sat, batch_grd = orien.shape
+       #log.debug(f"Ground width: {grd_width}")
+        batch_sat, batch_grd = self.torch_shape(orien,2)
+       #log.debug(f"Batch sat size: {batch_sat}")
+       #log.debug(f"Batch grd size: {batch_grd}")
         channel, h, w = sat_matrix.shape[1:]
-
+       #log.debug(f"Starting shape of sat_matrix [B,C,H,W]: {sat_matrix.shape}")
         # Espandi sat_matrix per ogni ground feature
         # [batch_sat, channel, h, w] -> [batch_sat, 1, channel, h, w] -> [batch_sat, batch_grd, channel, h, w]
         sat_expanded = sat_matrix.unsqueeze(1).expand(-1, batch_grd, -1, -1, -1)
+       #log.debug(f"Expanded shape of sat_matrix [B,BG,C,H,W]: {sat_expanded.shape}")
 
         # Riorganizza per avere width come prima dimensione spaziale
         # [batch_sat, batch_grd, channel, h, w] -> [batch_sat, batch_grd, channel, w, h]
         sat_transposed = sat_expanded.permute(0, 1, 2, 4, 3)
-
+       #log.debug(f"Permuted shape of sat_matrix [B,BG,C,W,H]: {sat_transposed.shape}")
         # Crea gli indici per il cropping circolare
         batch_sat_idx = torch.arange(batch_sat, device=sat_matrix.device).view(-1, 1, 1)
         batch_grd_idx = torch.arange(batch_grd, device=sat_matrix.device).view(1, -1, 1)
@@ -108,10 +122,7 @@ class ProcessFeatures(nn.Module):
 
         # Riorganizza per ottenere [batch_sat, batch_grd, channel, h, grd_width]
         sat_crop_matrix = sat_cropped.permute(0, 1, 2, 4, 3)
-
-        assert sat_crop_matrix.shape[4] == grd_width
+       #log.debug(f"sat_crop_matrix shape: {sat_crop_matrix.shape}")
+        assert sat_crop_matrix.size()[3] == grd_width, f"Expected {grd_width}, but got {sat_crop_matrix.size()[3]}"
 
         return sat_crop_matrix
-
-    def torch_shape(self, x, rank):
-        return list(x.shape)

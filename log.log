@@ -1,4 +1,7 @@
 Starting project...
+--------------------------------------PARSING INPUT ARGUMENTS--------------------------------------
+------------------------------------------------END------------------------------------------------
+
 Args received...
 
 --------------------------------PARAMETERS OF : MODEL CONFIGURATION--------------------------------
@@ -12,6 +15,8 @@ test_grd_FOV = 0
 dropout_ratio = 0.2
 no_layer_vgg_non_trainable = 9
 vgg_default_weights = VGG16_Weights.IMAGENET1K_FEATURES
+train_grd_noise = 360
+log_frequency = 10
 ------------------------------------------------END------------------------------------------------
 
 ------------------------------------------LOADING DATASET------------------------------------------
@@ -38,77 +43,20 @@ Segmentation (zero) input matrix dimension: torch.Size([2, 128, 512, 3])
 
 -------------------------------------------FIRST FEATURES-------------------------------------------
 Calculating (forward pass) first features (zeros as input) ...
-At layer 1 x shape: torch.Size([2, 64, 128, 512])
-At layer 2 x shape: torch.Size([2, 64, 128, 512])
-At layer 3 x shape: torch.Size([2, 64, 128, 512])
-At layer 4 x shape: torch.Size([2, 64, 128, 512])
-At layer 5 x shape: torch.Size([2, 64, 64, 256])
-At layer 6 x shape: torch.Size([2, 128, 64, 256])
-At layer 7 x shape: torch.Size([2, 128, 64, 256])
-At layer 8 x shape: torch.Size([2, 128, 64, 256])
-At layer 9 x shape: torch.Size([2, 128, 64, 256])
-At layer 10 x shape: torch.Size([2, 128, 32, 128])
-At layer 11 x shape: torch.Size([2, 256, 32, 128])
-At layer 12 x shape: torch.Size([2, 256, 32, 128])
-At layer 13 x shape: torch.Size([2, 256, 32, 128])
-At layer 14 x shape: torch.Size([2, 256, 32, 128])
-At layer 15 x shape: torch.Size([2, 256, 32, 128])
-At layer 16 x shape: torch.Size([2, 256, 32, 128])
-At layer 17 x shape: torch.Size([2, 256, 16, 64])
-Dropping connections...
-At layer 18 x shape: torch.Size([2, 512, 16, 64])
-At layer 19 x shape: torch.Size([2, 512, 16, 64])
-Dropping connections...
-At layer 20 x shape: torch.Size([2, 512, 16, 64])
-At layer 21 x shape: torch.Size([2, 512, 16, 64])
-Dropping connections...
-At layer 22 x shape: torch.Size([2, 512, 16, 64])
-At layer 23 x shape: torch.Size([2, 512, 16, 64])
-x.shape before 1st warp and pad: torch.Size([2, 512, 16, 64])
-x.shape after 1st warp and pad: torch.Size([2, 512, 18, 66])
-x.shape before 2nd warp and pad: torch.Size([2, 256, 8, 64])
-x.shape after 2nd warp and pad: torch.Size([2, 256, 10, 66])
-x.shape before 3rd warp and pad: torch.Size([2, 64, 4, 64])
-x.shape after 3rd warp and pad: torch.Size([2, 64, 6, 66])
-Returning x shape (before permutation): torch.Size([2, 8, 4, 64])
-Returning x shape (after permutation): torch.Size([2, 4, 64, 8])
-At layer 1 x shape: torch.Size([2, 64, 128, 512])
-At layer 2 x shape: torch.Size([2, 64, 128, 512])
-At layer 3 x shape: torch.Size([2, 64, 128, 512])
-At layer 4 x shape: torch.Size([2, 64, 128, 512])
-At layer 5 x shape: torch.Size([2, 64, 64, 256])
-At layer 6 x shape: torch.Size([2, 128, 64, 256])
-At layer 7 x shape: torch.Size([2, 128, 64, 256])
-At layer 8 x shape: torch.Size([2, 128, 64, 256])
-At layer 9 x shape: torch.Size([2, 128, 64, 256])
-At layer 10 x shape: torch.Size([2, 128, 32, 128])
-At layer 11 x shape: torch.Size([2, 256, 32, 128])
-At layer 12 x shape: torch.Size([2, 256, 32, 128])
-At layer 13 x shape: torch.Size([2, 256, 32, 128])
-At layer 14 x shape: torch.Size([2, 256, 32, 128])
-At layer 15 x shape: torch.Size([2, 256, 32, 128])
-At layer 16 x shape: torch.Size([2, 256, 32, 128])
-At layer 17 x shape: torch.Size([2, 256, 16, 64])
-Dropping connections...
-At layer 18 x shape: torch.Size([2, 512, 16, 64])
-At layer 19 x shape: torch.Size([2, 512, 16, 64])
-Dropping connections...
-At layer 20 x shape: torch.Size([2, 512, 16, 64])
-At layer 21 x shape: torch.Size([2, 512, 16, 64])
-Dropping connections...
-At layer 22 x shape: torch.Size([2, 512, 16, 64])
-At layer 23 x shape: torch.Size([2, 512, 16, 64])
-x.shape before 1st warp and pad: torch.Size([2, 512, 16, 64])
-x.shape after 1st warp and pad: torch.Size([2, 512, 18, 66])
-x.shape before 2nd warp and pad: torch.Size([2, 256, 8, 64])
-x.shape after 2nd warp and pad: torch.Size([2, 256, 10, 66])
-x.shape before 3rd warp and pad: torch.Size([2, 64, 4, 64])
-x.shape after 3rd warp and pad: torch.Size([2, 64, 6, 66])
-Returning x shape (before permutation): torch.Size([2, 8, 4, 64])
-Returning x shape (after permutation): torch.Size([2, 4, 64, 8])
 Ground features (zero input) matrix dimension: torch.Size([2, 4, 64, 16])
 Polar satellite features (zero input) matrix dimension: torch.Size([2, 4, 64, 8])
 Segmentation features (zero input) matrix dimension: torch.Size([2, 4, 64, 8])
 Concatenated Satellite and Segmentation features (zero input) matrix dimension: torch.Size([2, 4, 64, 16])
-Definition of optimizer...
+------------------------------------------------END------------------------------------------------
 
+----------------------------------------CORRELATION MATRICES----------------------------------------
+Calculating correlation matrices...
+Global satellite matrix dimensions: (2215, 4, 64, 16)
+Global ground matrix dimensions: (2215, 4, 64, 16)
+Orientation matrix dimensions: (2215,)
+------------------------------------------------END------------------------------------------------
+
+-----------------------------------------STARTING TRAINING-----------------------------------------
+Using device: cpu
+Optimizer defined for device: cpu
+Epoch 1/10

@@ -6,6 +6,25 @@ import torch.nn.functional as F
 from features_manager import ProcessFeatures
 from logger import log
 
+def compute_triplet_loss(distance, loss_weight=10.0):
+    batch_size = distance.shape[0]
+
+    # Estrai la diagonale (distanze positive)
+    pos_dist = torch.diag(distance)
+
+    pair_n = batch_size * (batch_size - 1.0)
+
+    # satellite to ground
+    triplet_dist_g2s = pos_dist.unsqueeze(1) - distance
+    loss_g2s = torch.sum(torch.log(1 + torch.exp(triplet_dist_g2s * loss_weight))) / pair_n
+
+    # ground to satellite
+    triplet_dist_s2g = pos_dist.unsqueeze(0) - distance
+    loss_s2g = torch.sum(torch.log(1 + torch.exp(triplet_dist_s2g * loss_weight))) / pair_n
+
+    loss = (loss_g2s + loss_s2g) / 2.0
+    return loss
+
 class VGGGroundBranch(nn.Module):
     """
     VGG-based network for ground view (panoramic) images
@@ -97,34 +116,32 @@ class VGGSatelliteBranch(nn.Module):
 
             # Add dropout after specific block4 conv layers
             if i in [17, 19, 21]:  # block4_conv1, block4_conv2, block4_conv3
-                log.debug("Dropping connections...")
+                #log.debug("Dropping connections...")
                 x = self.dropout(x)
 
-            log.debug(f"At layer {i+1} x shape: {x.shape}")
+            #log.debug(f"At layer {i+1} of type {type(layer).__name__} the x shape is: {x.shape}")
 
             # Stop before last 6 layers
             if i >= len(self.features) - config["no_layer_vgg_non_trainable"]:
                 break
 
         # Additional convolutional layers with circular padding
-        log.debug(f"x.shape before 1st warp and pad: {x.shape}")
+        #log.debug(f"x.shape before 1st warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
-        log.debug(f"x.shape after 1st warp and pad: {x.shape}")
+        #log.debug(f"x.shape after 1st warp and pad: {x.shape}")
         x = self.relu(self.conv_extra1(x))
-        log.debug(f"x.shape before 2nd warp and pad: {x.shape}")
+        #log.debug(f"x.shape before 2nd warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
-        log.debug(f"x.shape after 2nd warp and pad: {x.shape}")
+        #log.debug(f"x.shape after 2nd warp and pad: {x.shape}")
         x = self.relu(self.conv_extra2(x))
-        log.debug(f"x.shape before 3rd warp and pad: {x.shape}")
+        #log.debug(f"x.shape before 3rd warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
-        log.debug(f"x.shape after 3rd warp and pad: {x.shape}")
+        #log.debug(f"x.shape after 3rd warp and pad: {x.shape}")
         x = self.relu(self.conv_extra3(x))
-        log.debug(f"Returning x shape (before permutation): {x.shape}")
+        #log.debug(f"Returning x shape (before permutation): {x.shape}")
         x=x.permute(0,2,3,1)
-        log.debug(f"Returning x shape (after permutation): {x.shape}")
+        #log.debug(f"Returning x shape (after permutation): {x.shape}")
         return x
-
-
 
 
 class GroundToAerialMatchingModel(nn.Module):
@@ -163,11 +180,11 @@ class GroundToAerialMatchingModel(nn.Module):
             return grd_features, sat_features, segmap_features
 
         # L2 normalize ground features
-        norm = torch.norm(grd_features, p=2, dim=[1, 2, 3], keepdim=True)
-        grd_features = grd_features / (norm + 1e-8)
+        #norm = torch.norm(grd_features, p=2, dim=[1, 2, 3], keepdim=True)
+        #grd_features = grd_features / (norm + 1e-8)
 
         # Concatenate satellite and segmentation features
-        sat_combined = torch.cat([sat_features, segmap_features], dim=1)
+        sat_combined = torch.concat([sat_features, segmap_features], dim=3)
 
         # Process features to compute correlation and distance
         sat_matrix, grd_matrix, distance, pred_orien = self.processor.VGG_13_conv_v2_cir(
