@@ -1,10 +1,8 @@
 import argparse
 import os
-
 import torch.optim
 import torch.nn.functional as F
 from torch import optim
-
 from config import *
 from logger import log
 from data_loader import InputData
@@ -12,6 +10,7 @@ from utils import *
 from model import GroundToAerialMatchingModel
 import numpy as np
 from model import compute_triplet_loss
+from gradcam import *
 
 def main():
     log.info("Starting project...")
@@ -152,8 +151,17 @@ def main():
                     loss_value = compute_triplet_loss(distance)
                     loss_value = loss_value / 4  # Divide by accumulation steps
 
-                    # Backward pass
-                    loss_value.backward()
+                    if gradcam_config["use_gradcam"]:
+                        gradcam = GradCAM(model.ground_branch, gradcam_config["target_layer"])
+                        loss_value.backward(retain_graph=True)
+
+                        cam_size = (batch_grd.shape[1], batch_grd.shape[2])
+                        saliency_loss = compute_saliency_loss(gradcam, batch_grd, cam_size)
+
+                        total_loss = loss_value + gradcam_config["lambda_saliency"] * saliency_loss
+                        total_loss.backward()
+                    else:
+                        loss_value.backward()
 
                     total_loss += loss_value.item() * 4  # Scale back for logging
 
@@ -165,6 +173,9 @@ def main():
 
                 if iter_count % config["log_frequency"] == 0:
                     log.info(f"ITERATION: {iter_count}, LOSS VALUE: {loss_value.item() * 4:.6f}, TOTAL LOSS: {total_loss:.6f}")
+                    if gradcam_config["save_plot_heatmaps"]:
+                        heatmap_np = gradcam.generate(cam_size)
+                        save_overlay_image(batch_grd, heatmap_np, path=f"plots/epoch{epoch}_iter{iter_count}_cam.png")
 
                 iter_count += 1
 

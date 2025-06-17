@@ -39,3 +39,11 @@ header_length=100
 logger_config = {
     "log_level":logging.DEBUG
 }
+
+gradcam_config = {
+    "use_gradcam": True,
+    "lambda_saliency": 0.5,
+    "target_layer": "features.21",
+    "apply_on": "ground",  # oppure "satellite"
+    "save_plot_heatmaps": True,  # salvataggio immagini ogni N iterazioni
+}
