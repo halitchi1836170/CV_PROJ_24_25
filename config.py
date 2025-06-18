@@ -47,3 +47,8 @@ gradcam_config = {
     "apply_on": "ground",  # oppure "satellite"
     "save_plot_heatmaps": True,  # salvataggio immagini ogni N iterazioni
 }
+
+sky_removal_config = {
+    "remove_sky": True,
+    "method": "deeplab",  # oppure "threshold"
+}
