@@ -1,0 +1,8 @@
+# Ignore all files in the Data/CVUSA_subset directory
+Data/CVUSA_subset/*
+
+# Ignore files in __pycache__ directories
+/__pycache__/
+
+# Ignore files in .idea directories
+/.idea/
