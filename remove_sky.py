@@ -1,4 +1,3 @@
-# remove_sky.py
 import cv2
 import numpy as np
 import torch
@@ -39,7 +38,7 @@ def remove_sky_deeplab(image_np):
         output = model(input_tensor)['out'][0]
     mask = output.argmax(0).byte().cpu().numpy()
 
-    SKY_CLASS = 21  # COCO class for 'sky'
+    SKY_CLASS = 7  # COCO class for 'sky'
     sky_mask = (mask == SKY_CLASS).astype(np.uint8) * 255
     sky_mask_inv = cv2.bitwise_not(sky_mask)
     result = cv2.bitwise_and(image_np, image_np, mask=sky_mask_inv)
