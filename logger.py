@@ -14,7 +14,7 @@ stream = logging.StreamHandler()
 stream.setLevel(LOG_LEVEL)
 stream.setFormatter(formatter)
 
-streamFile = logging.FileHandler(filename=f"{folders_and_files["log_file"]}", mode="w", encoding="utf-8")
+streamFile = logging.FileHandler(filename=f"{folders_and_files['log_file']}", mode="w", encoding="utf-8")
 streamFile.setLevel(logging.DEBUG)
 
 log = logging.getLogger("CV_PROJ_MAIN")

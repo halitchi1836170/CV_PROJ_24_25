@@ -98,7 +98,7 @@ def main():
 
         # load a Model
         if args_starting_epoch != 0:
-            model_path = f"{folders_and_files["saved_models_folder"]}/{args_starting_epoch}/model.pth"
+            model_path = f"{folders_and_files['saved_models_folder']}/{args_starting_epoch}/model.pth"
             if os.path.exists(model_path):
                 checkpoint = torch.load(model_path, map_location=device)
                 model.load_state_dict(checkpoint['model_state_dict'])
@@ -116,7 +116,6 @@ def main():
 
             while True:
                 total_loss = 0
-
                 # Gradient accumulation (batch=8, 4 iterations => total batch=32)
                 optimizer.zero_grad()
 
@@ -180,7 +179,7 @@ def main():
                 iter_count += 1
 
             # Save the model
-            model_path = f"{folders_and_files["saved_models_folder"]}/{epoch}/model.pth"
+            model_path = f"{folders_and_files['saved_models_folder']}/{epoch}/model.pth"
             os.makedirs(model_path, exist_ok=True)
 
             checkpoint = {
