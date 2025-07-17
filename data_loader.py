@@ -1,8 +1,9 @@
 import cv2
 import random
 import numpy as np
-from config import data_loader_config
+from config import data_loader_config, experiments_config
 from logger import log
+from sky_removal import batch_remove_sky
 
 class InputData:
 
@@ -210,6 +211,12 @@ class InputData:
             count += 1
 
         self.__cur_id += i
+
+        if experiments_config["remove_sky"]:
+            # Le immagini vengono denormalizzate, processate e rinormalizzate
+            batch_grd = (batch_grd * self.ground_std) + self.ground_mean  # denormalizza
+            batch_grd = batch_remove_sky(batch_grd)  # rimuove cielo
+            batch_grd = (batch_grd - self.ground_mean) / self.ground_std  # rinormalizza
 
         return batch_sat_polar, batch_sat, batch_grd, batch_segmap, (
             np.around(((512 - grd_shift) / 512 * 64) % 64)).astype(np.int_)

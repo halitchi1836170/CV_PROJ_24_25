@@ -11,6 +11,11 @@ from model import GroundToAerialMatchingModel
 import numpy as np
 from model import compute_triplet_loss
 from gradcam import *
+import matplotlib.pyplot as plt
+
+# Per salvataggio loss e dettagli
+loss_history = []
+epoch_losses = []
 
 def main():
     log.info("Starting project...")
@@ -48,7 +53,8 @@ def main():
 
         #DEFINITION OF THE MODEL
         log.info("Creation of the model...")
-        model = GroundToAerialMatchingModel()
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        model = GroundToAerialMatchingModel().to(device)
         log.info("Model created, summary: ")
         get_model_summary_simple(model)
         log.info(get_header_title("END", new_line=True))
@@ -89,7 +95,6 @@ def main():
         log.info(get_header_title("STARTING TRAINING"))
 
         # Device
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         log.info(f"Using device: {device}")
 
         # Optimizer
@@ -113,9 +118,11 @@ def main():
             model.train()
             iter_count = 0
             end = False
+            total_loss = 0
+            iter_losses = []
 
             while True:
-                total_loss = 0
+                #total_loss = 0
                 # Gradient accumulation (batch=8, 4 iterations => total batch=32)
                 optimizer.zero_grad()
 
@@ -150,19 +157,22 @@ def main():
                     loss_value = compute_triplet_loss(distance)
                     loss_value = loss_value / 4  # Divide by accumulation steps
 
-                    if gradcam_config["use_gradcam"]:
+                    if experiments_config["use_attention"]:
                         gradcam = GradCAM(model.ground_branch, gradcam_config["target_layer"])
                         loss_value.backward(retain_graph=True)
 
                         cam_size = (batch_grd.shape[1], batch_grd.shape[2])
                         saliency_loss = compute_saliency_loss(gradcam, batch_grd, cam_size)
 
-                        total_loss = loss_value + gradcam_config["lambda_saliency"] * saliency_loss
-                        total_loss.backward()
+                        total_loss_batch = loss_value + gradcam_config["lambda_saliency"] * saliency_loss
+                        total_loss_batch.backward()
                     else:
                         loss_value.backward()
+                        total_loss_batch = loss_value
 
-                    total_loss += loss_value.item() * 4  # Scale back for logging
+                    batch_loss = total_loss_batch.item() * 4
+                    total_loss += batch_loss
+                    iter_losses.append(batch_loss)
 
                 if end:
                     break
@@ -190,17 +200,19 @@ def main():
             }
             torch.save(checkpoint, os.path.join(model_path, 'model.pth'))
 
-        log.info(get_header_title("END", new_line=True))
+            loss_history.append(total_loss)
+            epoch_losses.append(iter_losses)
 
+        # Salvataggio dati per analisi
+        np.save(f"{folders_and_files['logs_folder']}/loss_history.npy", np.array(loss_history))
+        np.save(f"{folders_and_files['logs_folder']}/epoch_losses.npy", np.array(epoch_losses, dtype=object))
 
-
+        log.info(get_header_title("TRAINING COMPLETED.", new_line=True))
 
 
     elif args_mode == "TEST":
         log.info(get_header_title("TEST MODE"))
         log.info("Loading test data...")
-
-
 
 
 

@@ -13,12 +13,14 @@ config = {
     "no_layer_vgg_non_trainable": 9,
     "vgg_default_weights": VGG16_Weights.IMAGENET1K_FEATURES,
     "train_grd_noise": 360,
-    "log_frequency": 10
+    "log_frequency": 10,
+    "seed":17
 }
 
 folders_and_files = {
     "log_file": "./log.log",
     "saved_models_folder": "./Models",
+    "log_folder":"./logs"
 }
 
 data_loader_config = {
@@ -51,4 +53,19 @@ gradcam_config = {
 sky_removal_config = {
     "remove_sky": True,
     "method": "deeplab",  # oppure "threshold"
+}
+
+EXPERIMENTS = {
+    "BASE": {"use_attention": False, "remove_sky": False},
+    "ATTENTION": {"use_attention": True, "remove_sky": False},
+    "SKYREMOVAL": {"use_attention": False, "remove_sky": True},
+    "FULL": {"use_attention": True, "remove_sky": True},
+}
+
+experiments_config = {
+    "remove_sky":"",
+    "use_attention":"",
+    "name":"",
+    "logs_folder":"",
+    "saved_models_folder":""
 }
