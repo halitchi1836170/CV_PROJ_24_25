@@ -1,5 +1,5 @@
 from logger import log
-from config import *
+from Globals import *
 from torch.nn import Module
 from matplotlib import pyplot as plt
 import os
