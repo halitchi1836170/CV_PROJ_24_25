@@ -1,10 +1,30 @@
 import argparse
 from Train import train_model
 from Evaluation import test_model
-from Globals import EXPERIMENTS
+from Globals import EXPERIMENTS, folders_and_files
 from logger import log
 from Utils import get_header_title
-from post_analysis import plot_loss_curves as create_comparison_plots
+import matplotlib.pyplot as plt
+import os
+import numpy as np
+
+def create_comparison_plots():
+    plt.figure(figsize=(10, 6))
+    for name in EXPERIMENTS.keys():
+        path = f"{folders_and_files["log_folder"]}/{name}/loss_history.npy"
+        if os.path.exists(path):
+            log.info(f"Found, loading loss for plotting of experiment: {name}...")
+            loss = np.load(path)
+            plt.plot(loss, label=name)
+        else:
+            log.warning(f"File non trovato: {path}")
+    plt.xlabel("Epoch")
+    plt.ylabel("Loss")
+    plt.title("Confronto andamento Loss tra esperimenti in fase di training")
+    plt.legend()
+    plt.grid(True)
+    plt.savefig(f"{folders_and_files["log_folder"]}/loss_comparison.png")
+    log.info(f"Grafico salvato in {folders_and_files["log_folder"]}/loss_comparison.png")
 
 def main():
     parser = argparse.ArgumentParser(description="Ground-Satellite Matching")

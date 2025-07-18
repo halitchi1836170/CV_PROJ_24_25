@@ -2,7 +2,7 @@ import torch
 import matplotlib.pyplot as plt
 import numpy as np
 from Network import GroundToAerialMatchingModel
-from gradcam import GradCAM
+from Network import GradCAM
 from Utils import *
 
 # Dummy input

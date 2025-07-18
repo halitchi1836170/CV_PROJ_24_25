@@ -5,9 +5,8 @@ from torch import optim
 from Globals import config, folders_and_files, gradcam_config, images_params, experiments_config
 from logger import log
 from Utils import get_header_title, print_params, get_model_summary_simple, save_overlay_image
-from Network import GroundToAerialMatchingModel, compute_triplet_loss
+from Network import GroundToAerialMatchingModel, compute_triplet_loss, GradCAM, compute_saliency_loss
 from Data import InputData
-from gradcam import GradCAM, compute_saliency_loss
 
 def train_model(experiment_name, overrides):
     
