@@ -1,7 +1,7 @@
 import cv2
 import random
 import numpy as np
-from config import data_loader_config, experiments_config
+from Globals import data_loader_config, experiments_config
 from logger import log
 from sky_removal import batch_remove_sky
 

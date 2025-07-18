@@ -1,9 +1,9 @@
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
-from model import GroundToAerialMatchingModel
+from Network import GroundToAerialMatchingModel
 from gradcam import GradCAM
-from utils import *
+from Utils import *
 
 # Dummy input
 batch_grd = torch.randn([1, 128, 512, 3]).float()  # [B, H, W, C]

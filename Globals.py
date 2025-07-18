@@ -18,8 +18,8 @@ config = {
 }
 
 folders_and_files = {
-    "log_file": "./log.log",
-    "saved_models_folder": "./Models",
+    "log_file": "log",
+    "saved_models_folder": "./models",
     "log_folder":"./logs"
 }
 

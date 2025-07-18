@@ -3,13 +3,13 @@ import os
 import torch.optim
 import torch.nn.functional as F
 from torch import optim
-from config import *
+from Globals import *
 from logger import log
-from data_loader import InputData
-from utils import *
-from model import GroundToAerialMatchingModel
+from Data import InputData
+from Utils import *
+from Network import GroundToAerialMatchingModel
 import numpy as np
-from model import compute_triplet_loss
+from Network import compute_triplet_loss
 from gradcam import *
 import matplotlib.pyplot as plt
 

@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from torchvision.models import vgg16, VGG16_Weights
-from config import *
+from Globals import *
 import torch.nn.functional as F
 from features_manager import ProcessFeatures
 from logger import log
