@@ -20,7 +20,8 @@ config = {
 folders_and_files = {
     "log_file": "log",
     "saved_models_folder": "./models",
-    "log_folder":"./logs"
+    "log_folder":"./logs",
+    "plots_folder": "./plots",
 }
 
 data_loader_config = {
@@ -47,7 +48,7 @@ gradcam_config = {
     "lambda_saliency": 0.5,
     "target_layer": "features.21",
     "apply_on": "ground",  # oppure "satellite"
-    "save_plot_heatmaps": True,  # salvataggio immagini ogni N iterazioni
+    "save_plot_heatmaps": True,  # serve a salvare le heatmap ogni N iterazioni
 }
 
 sky_removal_config = {
@@ -67,5 +68,6 @@ experiments_config = {
     "use_attention":"",
     "name":"",
     "logs_folder":"",
-    "saved_models_folder":""
+    "saved_models_folder":"",
+    "plots_folder":"",
 }
