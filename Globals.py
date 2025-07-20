@@ -4,9 +4,9 @@ import logging
 config = {
     "name": "MODEL CONFIGURATION",
     "epochs":10,
-    "learning_rate":0.0001,
+    "learning_rate":0.00001,
     "batch_size":8,
-    "loss_weight":10.0,
+    "loss_weight":5.0,
     "train_grd_FOV": 360,
     "test_grd_FOV": 0,
     "dropout_ratio": 0.2,
@@ -57,7 +57,7 @@ sky_removal_config = {
 }
 
 EXPERIMENTS = {
-    "BASE": {"use_attention": False, "remove_sky": False},
+    #"BASE": {"use_attention": False, "remove_sky": False},
     "ATTENTION": {"use_attention": True, "remove_sky": False},
     "SKYREMOVAL": {"use_attention": False, "remove_sky": True},
     "FULL": {"use_attention": True, "remove_sky": True},
@@ -70,4 +70,6 @@ experiments_config = {
     "logs_folder":"",
     "saved_models_folder":"",
     "plots_folder":"",
+    "flag_save_ground_wo_sky": "",  # Flag to save ground image without sky,
+    "epoch_for_save": ""
 }

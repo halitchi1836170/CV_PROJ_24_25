@@ -160,6 +160,14 @@ class ProcessFeatures(nn.Module):
 
         return sat_crop_matrix
 
+def compute_top1_accuracy(distance_matrix):
+    # Distanze: shape (B, B) — ground vs satellite
+    gt_indices = torch.arange(distance_matrix.shape[0]).to(distance_matrix.device)
+    preds = torch.argmin(distance_matrix, dim=1)
+    correct = (preds == gt_indices).sum().item()
+    accuracy = correct / distance_matrix.shape[0]
+    return accuracy
+
 def compute_triplet_loss(distance, loss_weight=10.0):
     batch_size = distance.shape[0]
 
@@ -170,11 +178,11 @@ def compute_triplet_loss(distance, loss_weight=10.0):
 
     # satellite to ground
     triplet_dist_g2s = pos_dist.unsqueeze(1) - distance
-    loss_g2s = torch.sum(torch.log(1 + torch.exp(triplet_dist_g2s * loss_weight))) / pair_n
+    loss_g2s = torch.sum(torch.log(1 + torch.exp(triplet_dist_g2s * loss_weight).clamp(max=100))) / pair_n
 
     # ground to satellite
     triplet_dist_s2g = pos_dist.unsqueeze(0) - distance
-    loss_s2g = torch.sum(torch.log(1 + torch.exp(triplet_dist_s2g * loss_weight))) / pair_n
+    loss_s2g = torch.sum(torch.log(1 + torch.exp(triplet_dist_s2g * loss_weight).clamp(max=100))) / pair_n
 
     loss = (loss_g2s + loss_s2g) / 2.0
     return loss

@@ -3,15 +3,20 @@ from Train import train_model
 from Evaluation import test_model
 from Globals import EXPERIMENTS, folders_and_files
 from logger import log
-from Utils import get_header_title
+from Utils import get_header_title,print_params
 import matplotlib.pyplot as plt
 import os
 import numpy as np
+import torch
+
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+#Disabilitato causa incompatibilità con le GPU 
+torch.backends.cudnn.enabled = False
 
 def create_comparison_plots():
     plt.figure(figsize=(10, 6))
     for name in EXPERIMENTS.keys():
-        path = f"{folders_and_files["log_folder"]}/{name}/loss_history.npy"
+        path = f"{folders_and_files['log_folder']}/{name}/loss_history.npy"
         if os.path.exists(path):
             log.info(f"Found, loading loss for plotting of experiment: {name}...")
             loss = np.load(path)
@@ -23,8 +28,8 @@ def create_comparison_plots():
     plt.title("Confronto andamento Loss tra esperimenti in fase di training")
     plt.legend()
     plt.grid(True)
-    plt.savefig(f"{folders_and_files["log_folder"]}/loss_comparison.png")
-    log.info(f"Grafico salvato in {folders_and_files["log_folder"]}/loss_comparison.png")
+    plt.savefig(f"{folders_and_files['plots_folder']}/loss_comparison.png")
+    log.info(f"Grafico salvato in {folders_and_files['plots_folder']}/loss_comparison.png")
 
 def main():
     parser = argparse.ArgumentParser(description="Ground-Satellite Matching")
@@ -38,7 +43,8 @@ def main():
             for name, config_overrides in EXPERIMENTS.items():
                 log.info(get_header_title(f"Running experiment: {name}"))
                 train_model(name, config_overrides)
-                create_comparison_plots()
+                log.info(get_header_title(f"Experiment {name} completed", new_line=True))
+            create_comparison_plots()
         else:
             train_model("FULL", EXPERIMENTS["FULL"])
 
@@ -46,6 +52,7 @@ def main():
         if not args.model_path:
             raise ValueError("In TEST mode, --model_path must be specified.")
         test_model(args.model_path)
+
 
 if __name__ == "__main__":
     main()

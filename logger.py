@@ -16,7 +16,6 @@ stream.setLevel(LOG_LEVEL)
 stream.setFormatter(formatter)
 
 
-
 log = logging.getLogger("CV_PROJ_MAIN")
 log.setLevel(LOG_LEVEL)
 log.addHandler(stream)

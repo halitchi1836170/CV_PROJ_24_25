@@ -4,13 +4,15 @@ import numpy as np
 from torch import optim
 from Globals import config, folders_and_files, gradcam_config, images_params, experiments_config
 from logger import log
-from Utils import get_header_title, print_params, get_model_summary_simple, save_overlay_image
-from Network import GroundToAerialMatchingModel, compute_triplet_loss, GradCAM, compute_saliency_loss
+from Utils import get_header_title, print_params, get_model_summary_simple, save_overlay_image, plot_iterative_loss, plot_loss_boxplot
+from Network import GroundToAerialMatchingModel, compute_triplet_loss, GradCAM, compute_saliency_loss, compute_top1_accuracy
 from Data import InputData
+from sky_removal import remove_sky_from_image
+import logging
+import random
+import cv2
 
 def train_model(experiment_name, overrides):
-    
-    log.info(get_header_title(f"SETTING UP - {experiment_name}"))
     
     experiments_config["name"] = experiment_name
     experiments_config["use_attention"] = overrides["use_attention"]
@@ -28,7 +30,19 @@ def train_model(experiment_name, overrides):
     experiments_config["saved_models_folder"] = models_folder
     experiments_config["plots_folder"] = plots_folder
     
-    log.info(get_header_title(f"TRAIN METHOD CALLED ON EXPERIMENT - {experiment_name}"))
+    streamFile = logging.FileHandler(filename=f"{logs_folder}/{folders_and_files['log_file']}", mode="w", encoding="utf-8")
+    streamFile.setLevel(logging.DEBUG)
+    log.addHandler(streamFile)
+    
+    log.info(get_header_title(f"SETTING UP - {experiment_name}"))
+    
+    log.info("Experiment configuration:")
+    log.info(f"Logs folder: {logs_folder}")
+    log.info(f"Models folder: {models_folder}")
+    log.info(f"Plots folder: {plots_folder}")
+    log.info(f"Flag Use attention: {experiments_config['use_attention']}")
+    log.info(f"Flag Remove sky: {experiments_config['remove_sky']}")
+    log.info(get_header_title("END",new_line=True))
     
     log.info(get_header_title(f"PARAMETERS OF : {config['name']}"))
     print_params(config)
@@ -57,10 +71,10 @@ def train_model(experiment_name, overrides):
     log.info(get_header_title("END", new_line=True))
     
     log.info(get_header_title("DEFINITION OF THE INPUT DATA"))
-    grd_x = torch.zeros([2, int(max_width/4), width,3])                             #ORDINE CAMBIATO: B (batch size)-C (channels)-H-W
-    sat_x = torch.zeros([2, int(max_width/2), max_width,3])
-    polar_sat_x = torch.zeros([2, int(max_width/4), max_width,3])
-    segmap_x = torch.zeros([2, int(max_width/4), max_width,3])
+    grd_x = torch.zeros([2, int(max_width/4), width,3]).to(device)                             #ORDINE CAMBIATO: B (batch size)-C (channels)-H-W
+    sat_x = torch.zeros([2, int(max_width/2), max_width,3]).to(device)
+    polar_sat_x = torch.zeros([2, int(max_width/4), max_width,3]).to(device)
+    segmap_x = torch.zeros([2, int(max_width/4), max_width,3]).to(device)
     log.info(f"Ground (zero) input matrix dimension: {grd_x.shape}")
     log.info(f"Polar satellite (zero) input matrix dimension: {polar_sat_x.shape}")
     log.info(f"Segmentation (zero) input matrix dimension: {segmap_x.shape}")
@@ -96,15 +110,23 @@ def train_model(experiment_name, overrides):
     
     # Optimizer
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)  # Adatta il learning rate
-    log.info(f"Using optimizer: {optimizer}")
+    #log.info(f"Using optimizer: {optimizer}")
     
     # Training loop
     loss_history = []
     epoch_losses = []
     
     number_of_epoch = config["epochs"]
+    experiments_config["save_ground_wo_sky"] = True
+    
     for epoch in range(number_of_epoch):
+        
+        input_data.__cur_id = 0
+        random.shuffle(input_data.id_idx_list)  # <== AGGIUNGI QUESTO
+        
         log.info(f"Epoch {epoch + 1}/{config['epochs']}")
+        
+        experiments_config["epoch_for_save"] = epoch + 1
         
         model.train()
         total_loss = 0
@@ -113,30 +135,24 @@ def train_model(experiment_name, overrides):
         end = False
         
         while not end:
+            
             optimizer.zero_grad()
             
             for i in range(4):
-                batch_sat_polar, batch_sat, batch_grd, batch_segmap, batch_orien = input_data.next_pair_batch(8, grd_noise=config["train_grd_noise"], FOV=train_grd_FOV)
-
+                batch_sat_polar, batch_sat, batch_grd, batch_segmap, batch_orien = input_data.next_pair_batch(config["batch_size"], grd_noise=config["train_grd_noise"], FOV=train_grd_FOV)
+                 
                 if batch_sat is None:
-                    log.info("Satellite batch is None, breaking...")
+                    log.info("Satellite batch is None, breaking...") 
                     end = True
-                    break
+                    break  
             
                 # Converti in tensori PyTorch
                 batch_grd = torch.from_numpy(batch_grd).float().to(device)
                 batch_sat_polar = torch.from_numpy(batch_sat_polar).float().to(device)
                 batch_segmap = torch.from_numpy(batch_segmap).float().to(device)
 
-                # Forward pass
-                grd_features, sat_features, segmap_features = model(batch_grd, batch_sat_polar, batch_segmap,return_features=True)
-
-                # L2 normalization
-                norm = torch.norm(grd_features, p=2, dim=[1, 2, 3], keepdim=True)
-                grd_features = grd_features / (norm + 1e-8)
-
-                # Concatenation of satellite features and segmentation mask features
-                sat_features = torch.concat([sat_features, segmap_features], dim=3)
+                if experiments_config["use_attention"]:
+                    gradcam = GradCAM(model.ground_branch, gradcam_config["target_layer"])
 
                 # Compute correlation and distance matrix
                 sat_matrix, grd_matrix, distance, orien = model(batch_grd, batch_sat_polar, batch_segmap)
@@ -145,8 +161,11 @@ def train_model(experiment_name, overrides):
                 loss_value = compute_triplet_loss(distance)
                 loss_value = loss_value / 4  # Divide by accumulation steps
                 
+                #accuracy = compute_top1_accuracy(distance)
+                #log.info(f"[ACCURACY] Epoch {epoch + 1}/{config['epochs']}, Iter {iter_count}, Batch {i+1} → Accuracy: {accuracy:.4f}")
+                
                 if experiments_config["use_attention"]:
-                    gradcam = GradCAM(model.ground_branch, gradcam_config["target_layer"])
+                    #gradcam = GradCAM(model.ground_branch, gradcam_config["target_layer"])
                     loss_value.backward(retain_graph=True)
                     cam_size = (batch_grd.shape[1], batch_grd.shape[2])
                     saliency_loss = compute_saliency_loss(gradcam, batch_grd, cam_size)
@@ -164,12 +183,20 @@ def train_model(experiment_name, overrides):
             iter_count += 1
             
             if iter_count % config["log_frequency"] == 0:
-                log.info(f"ITERATION: {iter_count}, LOSS VALUE: {loss_value.item() * 4:.6f}, TOTAL LOSS: {total_loss:.6f}")
+                log.info(f"ITERATION: {iter_count}, mini-Batch {i+1} LOSS VALUE: {total_loss_batch.item() * 4:.6f}, TOTAL LOSS: {total_loss:.6f}")
                 if experiments_config["use_attention"]:
                     heatmap_np = gradcam.generate(cam_size)
-                    save_overlay_image(batch_grd, heatmap_np, path=f"{experiments_config["plots_folder"]}/epoch{epoch}_iter{iter_count}_cam.png")
+                    save_overlay_image(batch_grd[0], heatmap_np[0], path=f"{experiments_config['plots_folder']}/epoch{epoch+1}_iter{iter_count}_cam.png")
 
-        model_epoch_folder = os.path.join(models_folder, str(epoch))
+        log.info(f"FINAL LOG - ITERATION: {iter_count}, mini-Batch {i+1} LOSS VALUE: {total_loss_batch.item() * 4:.6f}, TOTAL LOSS: {total_loss:.6f}")
+        #if experiments_config["use_attention"]:
+        #    heatmap_np = gradcam.generate(cam_size)
+        #    save_overlay_image(batch_grd[0], heatmap_np[0], path=f"{experiments_config['plots_folder']}/epoch_{epoch+1}_iter{iter_count}_cam.png")
+        
+        if experiments_config["remove_sky"] and not experiments_config["flag_save_ground_wo_sky"]:
+            experiments_config["flag_save_ground_wo_sky"] = True # Reset flag for next epoch
+        
+        model_epoch_folder = os.path.join(models_folder, "epoch"+str(epoch+1))
         os.makedirs(model_epoch_folder, exist_ok=True)
         
         torch.save({
@@ -182,8 +209,14 @@ def train_model(experiment_name, overrides):
         loss_history.append(total_loss)
         epoch_losses.append(iter_losses)
         
+        np.save(os.path.join(logs_folder, "loss_history.npy"), np.array(loss_history))
+        np.save(os.path.join(logs_folder, "epoch_losses.npy"), np.array(epoch_losses, dtype=object))
+        
     np.save(os.path.join(logs_folder, "loss_history.npy"), np.array(loss_history))
     np.save(os.path.join(logs_folder, "epoch_losses.npy"), np.array(epoch_losses, dtype=object))
+    plot_iterative_loss(epoch_losses, experiment_name, os.path.join(plots_folder, "iterative_loss.png"))
+    #plot_loss_boxplot(epoch_losses, experiment_name, os.path.join(plots_folder, "loss_boxplot.png"))
+    
     log.info(get_header_title(f"TRAINING COMPLETED - {experiment_name}"))    
         
         
