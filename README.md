@@ -59,26 +59,44 @@ requirements.txt
 
 .
 ├── logs/
+
     ├── logs/
     ├── logs_bu1/
 ├── plots/
+    
     ├── plots/
     ├── plots_bu1/
+
 ├── CVUSA_subset.rar
+
 ├── CV_24_25_Slides.pdf
+
 ├── Data.py
+
 ├── Dockerfile
+
 ├── Evaluation.py
+
 ├── Globals.py
+
 ├── Network.py
+
 ├── README.md
+
 ├── Train.py
+
 ├── Utils.py
+
 ├── command.txt
+
 ├── logger.py
+
 ├── mian.py
+
 ├── requirements.txt
+
 ├── save_plots.py
+
 ├── sky_removal.py
 
 
