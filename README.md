@@ -57,6 +57,8 @@ plots/CMC_all_models.png: confronto curve CMC tra modelli
 
 requirements.txt
 
+## Struttura
+
 .
 ├── logs/
 
