@@ -48,10 +48,20 @@ Calcola: Top-1, Top-5, Top-10, Top-1% recall
 Genera: top-5 retrieval, curva CMC
 
 ## Output generati
+plots/plots/ ci sono i plot dopo la correzione di alcuni bug e l'avvio della configurazione BASE per 30 epoche
+
+plots/plots_bu1/ prima di quanto sopra 
 
 plots/{EXP_NAME}_top_5_matches.png: visualizzazione retrieval
 
 plots/CMC_all_models.png: confronto curve CMC tra modelli
+
+## Log generati
+logs/logs/ ci sono i log dopo la correzione di alcuni bug e l'avvio della configurazione BASE per 30 epoche
+
+logs/logs_bu1/ prima di quanto sopra
+
+NOTA: sono presenti i dati .npy utili a ricreare i vari plot presenti 
 
 ## Requisiti
 
