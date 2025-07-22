@@ -1,0 +1,18 @@
+COMANDO AVVIO IMMAGINE DOCKER
+(se da gitbash) winpty docker run --gpus all -it cv_proj_image bash
+(per dare accesso alle gpu) podman run --name container_cv_proj_image --device nvidia.com/gpu=all --ipc host -it docker.io/library/cv_proj_image:latest bash
+
+COMANDO SALVATAGGIO IN TAR IMMAGINE DOCKER
+docker save -o ./TarFiles/cv_proj_image.tar cv_proj_image:latest
+
+COMANDO  TRASFERIMENTO FILE TAR
+scp ./TarFiles/cv_proj_image.tar halitchi@INDIRIZZO_IP_MACCHINA_REMOTA:/home/halitchi/TarFiles
+
+COMANDO TRASFERIMENTO FILE GENERICO IN CARTELLA PROGETTO 
+scp *FILE* halitchi@INDIRIZZO_IP_MACCHINA_REMOTA:/home/halitchi/CV_PROJ_24_25
+
+COMANDO TRASFERIMENTO FILE DA HOST UBUNTU A CONTAINER
+podman cp *FILE* CONTAINER_ID:/home/workspace
+
+COMANDO AVVIO MAIN CON TRAIN IMPOSTATO SUL PARAGONE
+python main.py --mode TRAIN --experiments ALL 
