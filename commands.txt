@@ -1,3 +1,6 @@
+COMANDO COSTRUZIONE IMMAGINE DOCKER IN LOCALE
+docker build cv_proj_image .
+
 COMANDO AVVIO IMMAGINE DOCKER
 (se da gitbash) winpty docker run --gpus all -it cv_proj_image bash
 (per dare accesso alle gpu) podman run --name container_cv_proj_image --device nvidia.com/gpu=all --ipc host -it docker.io/library/cv_proj_image:latest bash
