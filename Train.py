@@ -159,7 +159,7 @@ def train_model(experiment_name, overrides):
 
                 # Compute the loss
                 loss_value = compute_triplet_loss(distance)
-                #loss_value = loss_value  # Divide by accumulation steps
+                #loss_value = loss_value / 4  # Divide by accumulation steps
                 
                 #accuracy = compute_top1_accuracy(distance)
                 #log.info(f"[ACCURACY] Epoch {epoch + 1}/{config['epochs']}, Iter {iter_count}, Batch {i+1} → Accuracy: {accuracy:.4f}")
@@ -176,6 +176,7 @@ def train_model(experiment_name, overrides):
                     loss_value.backward()
                     total_loss_batch = loss_value
         
+                #batch_loss = total_loss_batch.item() * 4
                 batch_loss = total_loss_batch.item()
                 total_loss += batch_loss
                 iter_losses.append(batch_loss)

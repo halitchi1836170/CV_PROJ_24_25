@@ -16,8 +16,15 @@ torch.backends.cudnn.benchmark = False
 from tqdm import tqdm
 
 from Data import InputData
-from Globals import folders_and_files, config, EXPERIMENTS
+from Globals import folders_and_files, config
 from Network import GroundToAerialMatchingModel
+
+EXPERIMENTS = {
+    "BASE": {"use_attention": False, "remove_sky": False},
+    "ATTENTION": {"use_attention": True, "remove_sky": False},
+    "SKYREMOVAL": {"use_attention": False, "remove_sky": True},
+    "FULL": {"use_attention": True, "remove_sky": True},
+}
 
 from logger import log
 from Network import compute_triplet_loss
