@@ -67,13 +67,13 @@ requirements.txt
     ├── plots/
     ├── plots_bu1/
 
-├── CVUSA_subset.rar
+├── CVUSA_subset.rar : subset of CVUSA to be saved in ./Data/
 
 ├── CV_24_25_Slides.pdf
 
-├── Data.py
+├── Data.py : defines all method to unload train and test data
 
-├── Dockerfile
+├── Dockerfile : Dockerfile used to create the container for the project (to bu run on a host with CUDA)
 
 ├── Evaluation.py
 
@@ -87,7 +87,7 @@ requirements.txt
 
 ├── Utils.py
 
-├── command.txt
+├── commands.txt : useful txt file containing most of the docker (and podman for the host machine) to manage dcoker images and container
 
 ├── logger.py
 
@@ -95,9 +95,9 @@ requirements.txt
 
 ├── requirements.txt
 
-├── save_plots.py
+├── save_plots.py : used to create most of the plots
 
-├── sky_removal.py
+├── sky_removal.py : used to define the method to be called when removing the sky using the mask2former pre-trained model
 
 
 
