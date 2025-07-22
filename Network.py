@@ -320,19 +320,6 @@ class GroundToAerialMatchingModel(nn.Module):
         self.processor = ProcessFeatures()
 
     def forward(self, ground_img, polar_sat_img, segmap_img, return_features=False):
-        """
-        Forward pass through the complete model
-
-        Args:
-            ground_img: Ground panoramic images [B, C, H, W]
-            polar_sat_img: Polar satellite images [B, C, H, W]
-            segmap_img: Segmentation mask images [B, C, H, W]
-            return_features: If True, return intermediate features
-
-        Returns:
-            If return_features=True: (grd_features, sat_features, segmap_features)
-            Else: (sat_matrix, grd_matrix, distance, pred_orien)
-        """
         # Extract features from each branch
         grd_features = self.ground_branch(ground_img)
         sat_features = self.satellite_branch(polar_sat_img)
@@ -342,8 +329,8 @@ class GroundToAerialMatchingModel(nn.Module):
             return grd_features, sat_features, segmap_features
 
         # L2 normalize ground features
-        #norm = torch.norm(grd_features, p=2, dim=[1, 2, 3], keepdim=True)
-        #grd_features = grd_features / (norm + 1e-8)
+        norm = torch.norm(grd_features, p=2, dim=[1, 2, 3], keepdim=True)
+        grd_features = grd_features / (norm + 1e-8)
 
         # Concatenate satellite and segmentation features
         sat_combined = torch.concat([sat_features, segmap_features], dim=3)

@@ -159,23 +159,24 @@ def train_model(experiment_name, overrides):
 
                 # Compute the loss
                 loss_value = compute_triplet_loss(distance)
-                loss_value = loss_value / 4  # Divide by accumulation steps
+                #loss_value = loss_value  # Divide by accumulation steps
                 
                 #accuracy = compute_top1_accuracy(distance)
                 #log.info(f"[ACCURACY] Epoch {epoch + 1}/{config['epochs']}, Iter {iter_count}, Batch {i+1} → Accuracy: {accuracy:.4f}")
                 
                 if experiments_config["use_attention"]:
                     #gradcam = GradCAM(model.ground_branch, gradcam_config["target_layer"])
-                    loss_value.backward(retain_graph=True)
+                    #loss_value.backward(retain_graph=True)
                     cam_size = (batch_grd.shape[1], batch_grd.shape[2])
                     saliency_loss = compute_saliency_loss(gradcam, batch_grd, cam_size)
                     total_loss_batch = loss_value + gradcam_config["lambda_saliency"] * saliency_loss
-                    total_loss_batch.backward()
+                    total_loss_batch.backward(retain_graph=True)
+                    total_loss_batch = total_loss_batch
                 else:
                     loss_value.backward()
                     total_loss_batch = loss_value
         
-                batch_loss = total_loss_batch.item() * 4
+                batch_loss = total_loss_batch.item()
                 total_loss += batch_loss
                 iter_losses.append(batch_loss)
                 

@@ -1,6 +1,6 @@
 import argparse
 from Train import train_model
-from Evaluation import test_model
+from Evaluation import main as test_model
 from Globals import EXPERIMENTS, folders_and_files
 from logger import log
 from Utils import get_header_title,print_params

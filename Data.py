@@ -61,9 +61,11 @@ class InputData:
 
     def next_batch_scan(self, batch_size, grd_noise=360, FOV=360):
         if self.__cur_test_id >= self.test_data_size:
+            log.info("Reached end of test data, resetting cursor.")
             self.__cur_test_id = 0
             return None, None, None, None, None
         elif self.__cur_test_id + batch_size >= self.test_data_size:
+            log.info("Not enough data left for a full batch, adjusting batch size.")
             batch_size = self.test_data_size - self.__cur_test_id
 
         grd_width = int(FOV / 360 * 512)
@@ -86,10 +88,10 @@ class InputData:
             batch_sat_polar[i, :, :, :] = img
 
             # SATELLITE POLAR TRANSFORMED SEGMENTED
-            img_s = cv2.imread(self.img_root + self.id_list[img_idx][0].replace("/input", "/segmap/output"))
+            img_s = cv2.imread(self.img_root + self.id_test_list[img_idx][0].replace("/input", "/segmap/output"))
 
             if img_s is None or img.shape[0] != 128 or img_s.shape[1] != 512:
-                log.info('Read fail: %s, %d, ' % (self.img_root + self.id_list[img_idx][0], i),
+                log.info('Read fail: %s, %d, ' % (self.img_root + self.id_test_list[img_idx][0], i),
                       img_s.shape)
                 continue
             img_s = img_s.astype(np.float32)
@@ -117,6 +119,15 @@ class InputData:
             batch_grd[i, :, :, :] = img_dup
 
             grd_shift[i] = random_shift
+
+            pano_id = self.id_test_list[img_idx][3]          # ID univoco salvato nel CSV
+            sat_polar_file = self.id_test_list[img_idx][0]   # path satellite polar
+            sat_file = self.id_test_list[img_idx][1]         # path satellite RGB
+            grd_file = self.id_test_list[img_idx][2]         # path ground
+
+            # Logga le prime N occorrenze per non inondare la console
+            if i+1 <= 0:    # o qualunque numero tu voglia
+                log.debug(f"CONTROLLO COPPIE gnd-sat: idx={img_idx:04d}  pano={pano_id}  "f"SAT_POLAR={(sat_polar_file)} "f"SAT={(sat_file)}  GRD={(grd_file)}  "f"shift={grd_shift[i]}")
 
         self.__cur_test_id += batch_size
 

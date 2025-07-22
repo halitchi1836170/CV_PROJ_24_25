@@ -8,7 +8,7 @@ config = {
     "batch_size":8,
     "loss_weight":5.0,
     "train_grd_FOV": 360,
-    "test_grd_FOV": 0,
+    "test_grd_FOV": 360,
     "dropout_ratio": 0.2,
     "no_layer_vgg_non_trainable": 9,
     "vgg_default_weights": VGG16_Weights.IMAGENET1K_FEATURES,
@@ -57,7 +57,7 @@ sky_removal_config = {
 }
 
 EXPERIMENTS = {
-    #"BASE": {"use_attention": False, "remove_sky": False},
+    "BASE": {"use_attention": False, "remove_sky": False},
     "ATTENTION": {"use_attention": True, "remove_sky": False},
     "SKYREMOVAL": {"use_attention": False, "remove_sky": True},
     "FULL": {"use_attention": True, "remove_sky": True},
