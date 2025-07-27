@@ -45,12 +45,17 @@ class ProcessFeatures(nn.Module):
         super(ProcessFeatures, self).__init__()
 
     def VGG_13_conv_v2_cir(self, sat_features, grd_features):
+        #log.debug("Starting VGG_13_conv_v2_cir method...")
+        # Ensure input shapes are correct
+        #log.debug(f"sat_features shape: {sat_features.shape}")
+        #log.debug(f"grd_features shape: {grd_features.shape}")
         sat_matrix, distance, pred_orien = self.corr_crop_distance(sat_features, grd_features)
         return sat_features, grd_features, distance, pred_orien
 
     def corr_crop_distance(self, sat_vgg, grd_vgg):
         corr_out, corr_orien = self.corr(sat_vgg, grd_vgg)
         sat_cropped = self.crop_sat(sat_vgg, corr_orien, grd_vgg.size()[2])
+        #log.debug(f"sat_cropped shape: {sat_cropped.shape} after cropping in corr_cropdistance method")
         # shape = [batch_sat, batch_grd, h, grd_width, channel]
 
         norm = torch.sqrt(torch.sum(sat_cropped ** 2, dim=[2, 3, 4], keepdim=True) + 1e-8)
@@ -59,6 +64,8 @@ class ProcessFeatures(nn.Module):
         grd_expanded = grd_vgg.unsqueeze(0)
         dot_product = torch.sum(sat_matrix * grd_expanded, dim=[2, 3, 4])
         distance = 2 - 2 * dot_product.t()
+        # shape = [batch_grd, batch_sat]
+        #log.debug(f"distance shape: {distance.shape} after computing distance in corr_crop_distance method")
 
         return sat_matrix, distance, corr_orien
 
@@ -68,10 +75,14 @@ class ProcessFeatures(nn.Module):
         return padded
 
     def corr(self, sat_matrix, grd_matrix):
-        batch_sat, s_c, s_h, s_w = sat_matrix.shape
-        batch_grd, g_c, g_h, g_w = grd_matrix.shape
+        batch_sat, s_h, s_w, s_c = sat_matrix.shape
+        batch_grd, g_h, g_w, g_c = grd_matrix.shape
 
         assert s_h == g_h, s_c == g_c  # devono avere la stessa altezza e lo stesso numero di canali
+
+        #log.debug("Starting correlation computation...")
+        #log.debug(f"sat_matrix shape: {sat_matrix.shape}")
+        #log.debug(f"grd_matrix shape: {grd_matrix.shape}")
 
         n = g_w - 1
 
@@ -80,6 +91,7 @@ class ProcessFeatures(nn.Module):
             return out
 
         x = inner_warp_pad_columns(sat_matrix, n)
+        #x = self.warp_pad_columns(sat_matrix, n)
 
         correlations = []
         for i in range(batch_sat):
@@ -89,76 +101,71 @@ class ProcessFeatures(nn.Module):
             corr_results = []
             for j in range(batch_grd):
                 grd_single = grd_matrix[j:j + 1]  # [1, channel, height, width]
+                #log.debug(f"Processing satellite {i+1}/{batch_sat}, ground {j+1}/{batch_grd} with sat shapes: {sat_single.shape} and ground shapes: {grd_single.shape}")
                 # Flip del kernel per correlazione (invece di convoluzione)
                 grd_flipped = torch.flip(grd_single, dims=[3])
 
                 # Convoluzione 2D
-                corr = F.conv2d(sat_single, grd_flipped, padding=0)
+                corr = F.conv2d(sat_single, grd_flipped, padding="valid")
                 corr_results.append(corr)
 
             # Concatena i risultati lungo la dimensione dei ground features
-            sat_corr = torch.cat(corr_results, dim=1)  # [1, batch_grd, 1, s_w]
+            sat_corr = torch.cat(corr_results, dim=1)  # [1, batch_grd, s_w, 1]
             correlations.append(sat_corr)
 
         # Concatena tutti i risultati satellite
-        out = torch.concat(correlations, dim=0)  # [batch_sat, batch_grd, 1, s_w]
-       #log.debug(f"out shape before squeeze: {out.shape}")
+        out = torch.concat(correlations, dim=0)  # [batch_sat, batch_grd, s_w, 1]
+        #log.debug(f"out shape before squeeze: {out.shape}")
         # Rimuovi la dimensione dell'altezza (che dovrebbe essere 1)
         out = out.squeeze(3)  # [batch_sat, batch_grd, s_w]
-       #log.debug(f"out shape after squeeze: {out.shape}")
+        #log.debug(f"out shape after squeeze: {out.shape}")
         # Trova l'orientamento con correlazione massima
         orien = torch.argmax(out, dim=2)  # [batch_sat, batch_grd]
-        #log.debug(f"orien: {orien}")
-        #log.debug(f"orien.long: {orien.long()}")
-        return out, orien.long()
+        #log.debug(f"orien shape: {orien.shape} after argmax")
+        return out, orien.to(torch.int32)
 
     def torch_shape(self, x, rank):
-       #log.debug(f"shape of x in input: {x.shape}")
+        #log.debug(f"Shape of x in input: {x.shape}")
         assert len(x.shape) == rank, f"Expected rank {rank}, but got {len(x.shape)}"
-        return list(x.shape)
+        shape = list(x.size())[:rank]
+        return tuple(shape)
 
     def crop_sat(self, sat_matrix, orien, grd_width):
-       #log.debug(f"Ground width: {grd_width}")
+        #log.debug(f"Ground width: {grd_width}")
         batch_sat, batch_grd = self.torch_shape(orien,2)
-       #log.debug(f"Batch sat size: {batch_sat}")
-       #log.debug(f"Batch grd size: {batch_grd}")
-        channel, h, w = sat_matrix.shape[1:]
-       #log.debug(f"Starting shape of sat_matrix [B,C,H,W]: {sat_matrix.shape}")
+        #log.debug(f"Batch sat size: {batch_sat}")
+        #log.debug(f"Batch grd size: {batch_grd}")
+        h,w,channel = sat_matrix.shape[1:]
+        #log.debug(f"Starting shape of sat_matrix [B,H,W,C]: {sat_matrix.shape}")
         # Espandi sat_matrix per ogni ground feature
-        # [batch_sat, channel, h, w] -> [batch_sat, 1, channel, h, w] -> [batch_sat, batch_grd, channel, h, w]
         sat_expanded = sat_matrix.unsqueeze(1).expand(-1, batch_grd, -1, -1, -1)
-       #log.debug(f"Expanded shape of sat_matrix [B,BG,C,H,W]: {sat_expanded.shape}")
-
-        # Riorganizza per avere width come prima dimensione spaziale
-        # [batch_sat, batch_grd, channel, h, w] -> [batch_sat, batch_grd, channel, w, h]
-        sat_transposed = sat_expanded.permute(0, 1, 2, 4, 3)
-       #log.debug(f"Permuted shape of sat_matrix [B,BG,C,W,H]: {sat_transposed.shape}")
-        # Crea gli indici per il cropping circolare
-        batch_sat_idx = torch.arange(batch_sat, device=sat_matrix.device).view(-1, 1, 1)
-        batch_grd_idx = torch.arange(batch_grd, device=sat_matrix.device).view(1, -1, 1)
-        width_idx = torch.arange(w, device=sat_matrix.device).view(1, 1, -1)
-
-        # Applica l'offset circolare
-        orien_expanded = orien.unsqueeze(-1)  # [batch_sat, batch_grd, 1]
-        shifted_idx = (width_idx + orien_expanded) % w
-
-        # Gathering avanzato per il cropping
-        sat_shifted = torch.zeros_like(sat_transposed)
-        for i in range(batch_sat):
-            for j in range(batch_grd):
-                for k in range(w):
-                    shifted_k = shifted_idx[i, j, k].item()
-                    sat_shifted[i, j, :, k, :] = sat_transposed[i, j, :, shifted_k, :]
-
-        # Prendi solo le prime grd_width colonne
-        sat_cropped = sat_shifted[:, :, :, :grd_width, :]
-
-        # Riorganizza per ottenere [batch_sat, batch_grd, channel, h, grd_width]
-        sat_crop_matrix = sat_cropped.permute(0, 1, 2, 4, 3)
-       #log.debug(f"sat_crop_matrix shape: {sat_crop_matrix.shape}")
+        #log.debug(f"Expanded shape of sat_matrix [B,BG,H,W,C]: {sat_expanded.shape}")
+        sat_expanded = sat_expanded.permute(0, 1, 3, 2, 4) 
+        #log.debug(f"Permuted shape of sat_matrix [B,BG,W,H,C]: {sat_expanded.shape}")
+        orien = orien.unsqueeze(-1) # [batch_sat, batch_grd, 1]    
+        #log.debug(f"orien shape after unsqueeze: {orien.shape}")
+            
+        i = torch.arange(batch_sat, device=sat_matrix.device)
+        j = torch.arange(batch_grd, device=sat_matrix.device)
+        k = torch.arange(w, device=sat_matrix.device)    
+            
+        x,y,z = torch.meshgrid(i, j, k, indexing='ij')
+        z_index = ((z + orien) % w).long()  # Indici circolari
+        
+        sat_shifted = torch.zeros_like(sat_expanded)
+        for bi in range(batch_sat):
+            for bj in range(batch_grd):
+                sat_shifted[bi, bj] = sat_expanded[bi, bj][z_index[bi, bj, :]]
+        
+        sat_crop = sat_shifted[:, :, :grd_width, :, :]
+        #log.debug(f"Shape of sat_crop before cropping and permutaion: {sat_crop.shape}")
+        sat_crop_matrix = sat_crop.permute(0, 1, 3, 2, 4)  
+        #log.debug(f"sat_crop_matrix shape after cropping and permutaion: {sat_crop_matrix.shape}")
+        
         assert sat_crop_matrix.size()[3] == grd_width, f"Expected {grd_width}, but got {sat_crop_matrix.size()[3]}"
-
+        #log.debug(f"Final shape: {sat_crop_matrix.shape}")
         return sat_crop_matrix
+            
 
 def compute_top1_accuracy(distance_matrix):
     # Distanze: shape (B, B) — ground vs satellite
@@ -193,6 +200,7 @@ class VGGGroundBranch(nn.Module):
     """
 
     def __init__(self):
+        #log.debug("Initializing VGGGroundBranch...")
         super(VGGGroundBranch, self).__init__()
         # Load pretrained VGG16 and extract features
         vgg = vgg16(weights=config["vgg_default_weights"])
@@ -210,7 +218,10 @@ class VGGGroundBranch(nn.Module):
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
+        #log.debug("Forward pass through VGGGroundBranch...")
+        #log.debug(f"Input shape: {x.shape}")
         x = x.permute(0, 3, 1, 2)
+        #log.debug(f"Permuted input shape: {x.shape}")
         # Forward through VGG features
         for i, layer in enumerate(self.features):
             x = layer(x)
@@ -220,6 +231,7 @@ class VGGGroundBranch(nn.Module):
             # Stop before last 6 layers (equivalent to break at len-6)
             if i >= len(self.features) - config["no_layer_vgg_non_trainable"]:
                 break
+        #log.debug(f"Shape after VGG features: {x.shape}")
         # Additional convolutional layers
         x = self.warp_pad_columns(x,1)
         x = self.relu(self.conv_extra1(x))
@@ -227,7 +239,9 @@ class VGGGroundBranch(nn.Module):
         x = self.relu(self.conv_extra2(x))
         x = self.warp_pad_columns(x, 1)
         x = self.relu(self.conv_extra3(x))
+        #log.debug(f"Shape after extra conv layers: {x.shape}")
         x = x.permute(0, 2, 3, 1)
+        #log.debug(f"Final output shape: {x.shape}")
         return x
 
     def warp_pad_columns(self,x, n=1):
@@ -243,6 +257,7 @@ class VGGSatelliteBranch(nn.Module):
     """
 
     def __init__(self, name_suffix='_sat'):
+        #log.debug(f"Initializing VGGSatelliteBranch with suffix {name_suffix}...")
         super(VGGSatelliteBranch, self).__init__()
         self.name_suffix = name_suffix
         # Load pretrained VGG16 and extract features
@@ -271,22 +286,25 @@ class VGGSatelliteBranch(nn.Module):
         return out
 
     def forward(self, x):
+        #log.debug(f"Forward pass through VGGSatelliteBranch with suffix {self.name_suffix}...")
+        #log.debug(f"Input shape: {x.shape}")
         x = x.permute(0, 3, 1, 2)
+        #log.debug(f"Permuted input shape: {x.shape}")
         # Forward through VGG features
         for i, layer in enumerate(self.features):
             x = layer(x)
 
             # Add dropout after specific block4 conv layers
             if i in [17, 19, 21]:  # block4_conv1, block4_conv2, block4_conv3
-                #log.debug("Dropping connections...")
+                ##log.debug("Dropping connections...")
                 x = self.dropout(x)
 
-            #log.debug(f"At layer {i+1} of type {type(layer).__name__} the x shape is: {x.shape}")
+            ##log.debug(f"At layer {i+1} of type {type(layer).__name__} the x shape is: {x.shape}")
 
             # Stop before last 6 layers
             if i >= len(self.features) - config["no_layer_vgg_non_trainable"]:
                 break
-
+        #log.debug(f"Shape after VGG features: {x.shape}")
         # Additional convolutional layers with circular padding
         #log.debug(f"x.shape before 1st warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
@@ -311,6 +329,7 @@ class GroundToAerialMatchingModel(nn.Module):
     Complete Ground-to-Aerial image matching model with three VGG branches
     """
     def __init__(self):
+        #log.debug("Initializing GroundToAerialMatchingModel...")
         super(GroundToAerialMatchingModel, self).__init__()
         # Three parallel VGG branches
         self.ground_branch = VGGGroundBranch()
@@ -321,8 +340,12 @@ class GroundToAerialMatchingModel(nn.Module):
 
     def forward(self, ground_img, polar_sat_img, segmap_img, return_features=False):
         # Extract features from each branch
+        #log.debug("Forward pass through GroundToAerialMatchingModel...")
+        #log.debug(f"Ground image shape: {ground_img.shape}")
         grd_features = self.ground_branch(ground_img)
+        #log.debug(f"Satellite image shape: {polar_sat_img.shape}")
         sat_features = self.satellite_branch(polar_sat_img)
+        #log.debug(f"Segmentation map shape: {segmap_img.shape}")
         segmap_features = self.segmap_branch(segmap_img)
 
         if return_features:
@@ -339,7 +362,10 @@ class GroundToAerialMatchingModel(nn.Module):
         sat_matrix, grd_matrix, distance, pred_orien = self.processor.VGG_13_conv_v2_cir(
             sat_combined, grd_features
         )
-
+        #log.debug(f"Final pred sat_matrix shape: {sat_matrix.shape}")
+        #log.debug(f"Final pred grd_matrix shape: {grd_matrix.shape}")
+        #log.debug(f"Final pred distance shape: {distance.shape}")
+        #log.debug(f"Final pred pred_orien shape: {pred_orien.shape}")
         return sat_matrix, grd_matrix, distance, pred_orien
 
     def get_feature_dimensions(self, input_shapes):

@@ -91,8 +91,7 @@ class InputData:
             img_s = cv2.imread(self.img_root + self.id_test_list[img_idx][0].replace("/input", "/segmap/output"))
 
             if img_s is None or img.shape[0] != 128 or img_s.shape[1] != 512:
-                log.info('Read fail: %s, %d, ' % (self.img_root + self.id_test_list[img_idx][0], i),
-                      img_s.shape)
+                log.info('Read fail: %s, %d, ' % (self.img_root + self.id_test_list[img_idx][0], i),img_s.shape)
                 continue
             img_s = img_s.astype(np.float32)
             img_s = img_s / 255
@@ -131,18 +130,14 @@ class InputData:
 
         self.__cur_test_id += batch_size
 
-        return batch_sat_polar, batch_sat, batch_grd, batch_segmap, (
-            np.around(((512 - grd_shift) / 512 * 64) % 64)).astype(np.int_)
+        return batch_sat_polar, batch_sat, batch_grd, batch_segmap, (np.around(((512 - grd_shift) / 512 * 64) % 64)).astype(np.int_)
 
     def next_pair_batch(self, batch_size, grd_noise=360, FOV=360):
         if self.__cur_id == 0:
             for i in range(20):
                 random.shuffle(self.id_idx_list)
 
-        # if self.__cur_id + batch_size + 2 >= self.data_size:
-        #     self.__cur_id = 0
-        #     return None, None, None, None, None
-        if self.__cur_id >= self.data_size:
+        if self.__cur_id + batch_size + 2 >= self.data_size:
             self.__cur_id = 0
             return None, None, None, None, None
 
@@ -154,98 +149,76 @@ class InputData:
         batch_grd = np.zeros([batch_size, 128, grd_width, 3], dtype=np.float32)
         grd_shift = np.zeros([batch_size, ], dtype=np.int_)
 
-        #i = 0
+        i = 0
         batch_idx = 0
-        samples_tried = 0
-        max_samples_to_try = batch_size * 3
-        skipped_samples = 0
-        #count = 0
-        while batch_idx < batch_size and self.__cur_id < self.data_size and samples_tried < max_samples_to_try:
+        count = 0
+        while True:
             
-            # if batch_idx >= batch_size or self.__cur_id + i >= self.data_size:
-            #     break
+            if batch_idx >= batch_size or self.__cur_id + i >= self.data_size:
+                 break
 
-            img_idx = self.id_idx_list[self.__cur_id]
-            self.__cur_id += 1  # Incrementa sempre di 1
-            samples_tried += 1
+            img_idx = self.id_idx_list[self.__cur_id+i]
+            i += 1
             
-            try:
-                # Satellite polar
-                polar_path = self.img_root + self.id_list[img_idx][0].replace("/", "/normal/")
-                img = cv2.imread(polar_path)
-                if img is None or img.shape[:2] != (128, 512):
-                    skipped_samples += 1
-                    log.debug(f"[SKIP] Polar satellite image invalid: {polar_path}")
-                    continue
-                img = (img.astype(np.float32) / 255 - self.sat_polar_mean) / self.sat_polar_std
-                batch_sat_polar[batch_idx] = img
-                
-                # Satellite segmentazione
-                seg_path = self.img_root + self.id_list[img_idx][0].replace("/input", "/segmap/output")
-                img_s = cv2.imread(seg_path)
-                if img_s is None or img_s.shape[1] != 512:
-                    skipped_samples += 1
-                    log.debug(f"[SKIP] Segmentation image invalid: {seg_path}")
-                    continue
-                img_s = (img_s.astype(np.float32) / 255 - self.seg_mean) / self.seg_std
-                batch_segmap[batch_idx] = img_s
-                
-                
-                # Satellite RGB
-                sat_path = self.img_root + self.id_list[img_idx][1]
-                img = cv2.imread(sat_path)
-                if img is None or img.shape[:2] != (370, 370):
-                    skipped_samples += 1
-                    log.debug(f"[SKIP] Satellite image invalid: {sat_path}")
-                    continue
-                img = cv2.resize(img, (256, 256), interpolation=cv2.INTER_AREA).astype(np.float32) / 255
-                batch_sat[batch_idx] = img
-                
-                # Ground
-                grd_path = self.img_root + self.id_list[img_idx][2].replace("input", "").replace("png", "jpg")
-                img = cv2.imread(grd_path)
-                if img is None or img.shape[:2] != (224, 1232):
-                    skipped_samples += 1
-                    log.debug(f"[SKIP] Ground image invalid: {grd_path}")
-                    continue
-                
-                img = cv2.resize(img, (512, 128), interpolation=cv2.INTER_AREA).astype(np.uint8)
-                
-                if experiments_config["remove_sky"]:
-                    img_no_sky = remove_sky_from_image(img)  # questa funzione accetta uint8
-                    img = img_no_sky
-                    
-                img = img.astype(np.float32) / 255
-                img = (img - self.ground_mean) / self.ground_std
-                
-                random_shift = int(np.random.rand() * 512 * grd_noise / 360)
-                img_dup = img[:, np.arange(0, 512) - random_shift % 512][:, :grd_width, :]
-                batch_grd[batch_idx] = img_dup
-                grd_shift[batch_idx] = random_shift
-
-                batch_idx += 1
-                
-            except Exception as e:
-                log.warning(f"[EXCEPTION] Skipped image {img_idx} due to error: {e}")
-                skipped_samples += 1
+            
+            # Satellite polar
+            polar_path = self.img_root + self.id_list[img_idx][0].replace("/", "/normal/")
+            img = cv2.imread(polar_path)
+            if img is None or img.shape[:2] != (128, 512):
+                log.debug(f"Polar satellite image invalid: {polar_path}")
                 continue
+            img = (img.astype(np.float32) / 255 - self.sat_polar_mean) / self.sat_polar_std
+            batch_sat_polar[batch_idx, :, :, :] = img
+            
+            # Satellite segmentazione
+            seg_path = self.img_root + self.id_list[img_idx][0].replace("/input", "/segmap/output")
+            img_s = cv2.imread(seg_path)
+            if img_s is None or img_s.shape[:2] != (128, 512):
+                log.debug(f"Segmentation image invalid: {seg_path}")
+                continue
+            img_s = (img_s.astype(np.float32) / 255 - self.seg_mean) / self.seg_std
+            batch_segmap[batch_idx, :, :, :] = img_s
+            
+            # Satellite RGB
+            sat_path = self.img_root + self.id_list[img_idx][1]
+            img = cv2.imread(sat_path)
+            if img is None or img.shape[:2] != (370, 370):
+                log.debug(f"Satellite image invalid: {sat_path}")
+                continue
+            img = cv2.resize(img, (256, 256), interpolation=cv2.INTER_AREA).astype(np.float32) / 255
+            batch_sat[batch_idx, :, :, :] = img
+            
+            # Ground
+            grd_path = self.img_root + self.id_list[img_idx][2].replace("input", "").replace("png", "jpg")
+            img = cv2.imread(grd_path)
+            if img is None or img.shape[:2] != (224, 1232):
+                log.debug(f"Ground image invalid: {grd_path}")
+                continue
+            
+            img = cv2.resize(img, (512, 128), interpolation=cv2.INTER_AREA).astype(np.uint8)
+            
+            if experiments_config["remove_sky"]:
+                img_no_sky = remove_sky_from_image(img)  # questa funzione accetta uint8
+                img = img_no_sky
+                
+            img = img.astype(np.float32) / 255
+            #img = (img - self.ground_mean) / self.ground_std
+            
+            j = np.arange(0, 512)
+            
+            random_shift = int(np.random.rand() * 512 * grd_noise / 360)
+            img_dup = img[:, ((j - random_shift) % 512)[:grd_width], :]
+            batch_grd[batch_idx, :, :, :] = img_dup
+            
+            
+            grd_shift[batch_idx] = random_shift
 
-        # Se non riesci a riempire il batch, restituisci quello che hai
-        if batch_idx == 0:
-            log.warning(f"[BATCH] Empty batch returned. Skipped samples: {skipped_samples}")
-            return None, None, None, None, None
-
-        # Taglia gli array alla dimensione effettiva del batch
-        if batch_idx < batch_size:
-            log.info(f"[BATCH] Partial batch: {batch_idx}/{batch_size} - Skipped: {skipped_samples}")
-            batch_sat_polar = batch_sat_polar[:batch_idx]
-            batch_segmap = batch_segmap[:batch_idx]
-            batch_sat = batch_sat[:batch_idx]
-            batch_grd = batch_grd[:batch_idx]
-            grd_shift = grd_shift[:batch_idx]
+            batch_idx += 1
+            count += 1    
+            
+        self.__cur_id += i
         
-        return batch_sat_polar, batch_sat, batch_grd, batch_segmap, (
-            np.around(((512 - grd_shift) / 512 * 64) % 64)).astype(np.int_)
+        return batch_sat_polar, batch_sat, batch_grd, batch_segmap, (np.around(((512 - grd_shift) / 512 * 64) % 64)).astype(np.int_)
 
     def get_dataset_size(self):
         return self.data_size
