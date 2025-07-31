@@ -232,7 +232,7 @@ def evaluate_checkpoint(ckpt_path: str, batch_size: int = config["batch_size"], 
         
         with torch.no_grad():
             sat_mat, grd_mat, distance, _ = model(grd, sat_polar, seg)
-            loss_value = compute_triplet_loss(distance).item()
+            loss_value = compute_triplet_loss(distance,loss_weight=config["loss_weight"]).item()
         eval_batch_losses.append(loss_value)
         
         #if(counter+1 <= 5):

@@ -137,8 +137,8 @@ def train_model(experiment_name, overrides):
         while not end:
             
             optimizer.zero_grad()
-            
-            for i in range(4):
+            accum_steps=4
+            for i in range(accum_steps):
                 batch_sat_polar, batch_sat, batch_grd, batch_segmap, batch_orien = input_data.next_pair_batch(config["batch_size"], grd_noise=config["train_grd_noise"], FOV=train_grd_FOV)
                  
                 if batch_sat is None:
@@ -158,7 +158,7 @@ def train_model(experiment_name, overrides):
                 sat_matrix, grd_matrix, distance, orien = model(batch_grd, batch_sat_polar, batch_segmap)
 
                 # Compute the loss
-                loss_value = compute_triplet_loss(distance)
+                loss_value = compute_triplet_loss(distance,loss_weight=config["loss_weight"])
                 #loss_value = loss_value / 4  # Divide by accumulation steps
                 
                 #accuracy = compute_top1_accuracy(distance)
@@ -170,15 +170,15 @@ def train_model(experiment_name, overrides):
                     cam_size = (batch_grd.shape[1], batch_grd.shape[2])
                     saliency_loss = compute_saliency_loss(gradcam, batch_grd, cam_size)
                     total_loss_batch = loss_value + gradcam_config["lambda_saliency"] * saliency_loss
-                    total_loss_batch.backward(retain_graph=True)
-                    total_loss_batch = total_loss_batch
+                    #total_loss_batch.backward(retain_graph=True)
                 else:
-                    loss_value.backward()
+                    #loss_value.backward()
                     total_loss_batch = loss_value
         
                 #batch_loss = total_loss_batch.item() * 4
-                batch_loss = total_loss_batch.item()
+                batch_loss = total_loss_batch.item() / 4
                 total_loss += batch_loss
+                total_loss.backward(retain_graph=(i < accum_steps-1))  
                 iter_losses.append(batch_loss)
                 
             optimizer.step()

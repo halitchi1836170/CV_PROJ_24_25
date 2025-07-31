@@ -185,11 +185,11 @@ def compute_triplet_loss(distance, loss_weight=10.0):
 
     # satellite to ground
     triplet_dist_g2s = pos_dist.unsqueeze(1) - distance
-    loss_g2s = torch.sum(torch.log(1 + torch.exp(triplet_dist_g2s * loss_weight).clamp(max=100))) / pair_n
+    loss_g2s = torch.sum(torch.log(1 + torch.exp(triplet_dist_g2s * loss_weight))) / pair_n
 
     # ground to satellite
     triplet_dist_s2g = pos_dist.unsqueeze(0) - distance
-    loss_s2g = torch.sum(torch.log(1 + torch.exp(triplet_dist_s2g * loss_weight).clamp(max=100))) / pair_n
+    loss_s2g = torch.sum(torch.log(1 + torch.exp(triplet_dist_s2g * loss_weight))) / pair_n
 
     loss = (loss_g2s + loss_s2g) / 2.0
     return loss
@@ -200,7 +200,7 @@ class VGGGroundBranch(nn.Module):
     """
 
     def __init__(self):
-        #log.debug("Initializing VGGGroundBranch...")
+       #log.debug("Initializing VGGGroundBranch...")
         super(VGGGroundBranch, self).__init__()
         # Load pretrained VGG16 and extract features
         vgg = vgg16(weights=config["vgg_default_weights"])
@@ -212,16 +212,16 @@ class VGGGroundBranch(nn.Module):
         # Dropout layers for regularization
         self.dropout = nn.Dropout(config["dropout_ratio"])
         # Additional convolutional layers
-        self.conv_extra1 = nn.Conv2d(images_params["max_width"], int(images_params["max_width"]/2), kernel_size=3, stride=(2, 1), padding="valid")
-        self.conv_extra2 = nn.Conv2d(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1), padding="valid")
-        self.conv_extra3 = nn.Conv2d(int(images_params["max_width"]/8), int(images_params["max_width"]/32), kernel_size=3, stride=(1, 1), padding="valid")
+        self.conv_extra1 = nn.Conv2d(images_params["max_width"], int(images_params["max_width"]/2), kernel_size=3, stride=(2, 1), padding=(1,1))
+        self.conv_extra2 = nn.Conv2d(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1), padding=(1,1))
+        self.conv_extra3 = nn.Conv2d(int(images_params["max_width"]/8), int(images_params["max_width"]/32), kernel_size=3, stride=(1, 1), padding="same")
         self.relu = nn.ReLU(inplace=True)
 
     def forward(self, x):
-        #log.debug("Forward pass through VGGGroundBranch...")
-        #log.debug(f"Input shape: {x.shape}")
+       #log.debug("Forward pass through VGGGroundBranch...")
+       #log.debug(f"Input shape: {x.shape}")
         x = x.permute(0, 3, 1, 2)
-        #log.debug(f"Permuted input shape: {x.shape}")
+       #log.debug(f"Permuted input shape: {x.shape}")
         # Forward through VGG features
         for i, layer in enumerate(self.features):
             x = layer(x)
@@ -231,25 +231,25 @@ class VGGGroundBranch(nn.Module):
             # Stop before last 6 layers (equivalent to break at len-6)
             if i >= len(self.features) - config["no_layer_vgg_non_trainable"]:
                 break
-        #log.debug(f"Shape after VGG features: {x.shape}")
+       #log.debug(f"Shape after VGG features: {x.shape}")
         # Additional convolutional layers
-        x = self.warp_pad_columns(x,1)
+        #x = self.warp_pad_columns(x,1)
         x = self.relu(self.conv_extra1(x))
-        x = self.warp_pad_columns(x, 1)
+        #x = self.warp_pad_columns(x, 1)
         x = self.relu(self.conv_extra2(x))
-        x = self.warp_pad_columns(x, 1)
+        #x = self.warp_pad_columns(x, 1)
         x = self.relu(self.conv_extra3(x))
-        #log.debug(f"Shape after extra conv layers: {x.shape}")
+       #log.debug(f"Shape after extra conv layers: {x.shape}")
         x = x.permute(0, 2, 3, 1)
-        #log.debug(f"Final output shape: {x.shape}")
+       #log.debug(f"Final output shape: {x.shape}")
         return x
 
-    def warp_pad_columns(self,x, n=1):
-        # Concatenazione laterale (wrap lungo larghezza)
-        out = torch.cat([x[:, :, :, -n:], x, x[:, :, :, :n]], dim=3)
-        # Add symmetric padding for height
-        out = F.pad(out, (0, 0, n, n), mode='constant', value=0)
-        return out
+    # def warp_pad_columns(self,x, n=1):
+    #     # Concatenazione laterale (wrap lungo larghezza)
+    #     out = torch.cat([x[:, :, :, -n:], x, x[:, :, :, :n]], dim=3)
+    #     # Add symmetric padding for height
+    #     out = F.pad(out, (0, 0, n, n), mode='constant', value=0)
+    #     return out
 
 class VGGSatelliteBranch(nn.Module):
     """
@@ -257,7 +257,7 @@ class VGGSatelliteBranch(nn.Module):
     """
 
     def __init__(self, name_suffix='_sat'):
-        #log.debug(f"Initializing VGGSatelliteBranch with suffix {name_suffix}...")
+       #log.debug(f"Initializing VGGSatelliteBranch with suffix {name_suffix}...")
         super(VGGSatelliteBranch, self).__init__()
         self.name_suffix = name_suffix
         # Load pretrained VGG16 and extract features
@@ -270,9 +270,9 @@ class VGGSatelliteBranch(nn.Module):
         # Dropout layers for regularization
         self.dropout = nn.Dropout(config["dropout_ratio"])
         # Additional convolutional layers with circular padding
-        self.conv_extra1 = nn.Conv2d(images_params["max_width"], int(images_params["max_width"]/2), kernel_size=3, stride=(2, 1), padding=0)
-        self.conv_extra2 = nn.Conv2d(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1), padding=0)
-        self.conv_extra3 = nn.Conv2d(int(images_params["max_width"]/8), int(images_params["max_width"]/64), kernel_size=3, stride=(1, 1), padding=0)
+        self.conv_extra1 = nn.Conv2d(images_params["max_width"], int(images_params["max_width"]/2), kernel_size=3, stride=(2, 1), padding="valid")
+        self.conv_extra2 = nn.Conv2d(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1), padding="valid")
+        self.conv_extra3 = nn.Conv2d(int(images_params["max_width"]/8), int(images_params["max_width"]/64), kernel_size=3, stride=(1, 1), padding="valid")
         self.relu = nn.ReLU(inplace=True)
 
     def warp_pad_columns(self, x, n=1):
@@ -286,10 +286,10 @@ class VGGSatelliteBranch(nn.Module):
         return out
 
     def forward(self, x):
-        #log.debug(f"Forward pass through VGGSatelliteBranch with suffix {self.name_suffix}...")
-        #log.debug(f"Input shape: {x.shape}")
+       #log.debug(f"Forward pass through VGGSatelliteBranch with suffix {self.name_suffix}...")
+       #log.debug(f"Input shape: {x.shape}")
         x = x.permute(0, 3, 1, 2)
-        #log.debug(f"Permuted input shape: {x.shape}")
+       #log.debug(f"Permuted input shape: {x.shape}")
         # Forward through VGG features
         for i, layer in enumerate(self.features):
             x = layer(x)
@@ -299,28 +299,28 @@ class VGGSatelliteBranch(nn.Module):
                 ##log.debug("Dropping connections...")
                 x = self.dropout(x)
 
-            ##log.debug(f"At layer {i+1} of type {type(layer).__name__} the x shape is: {x.shape}")
+           #log.debug(f"At layer {i+1} of type {type(layer).__name__} the x shape is: {x.shape}")
 
             # Stop before last 6 layers
             if i >= len(self.features) - config["no_layer_vgg_non_trainable"]:
                 break
-        #log.debug(f"Shape after VGG features: {x.shape}")
+       #log.debug(f"Shape after VGG features: {x.shape}")
         # Additional convolutional layers with circular padding
-        #log.debug(f"x.shape before 1st warp and pad: {x.shape}")
+       #log.debug(f"x.shape before 1st warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
-        #log.debug(f"x.shape after 1st warp and pad: {x.shape}")
+       #log.debug(f"x.shape after 1st warp and pad: {x.shape}")
         x = self.relu(self.conv_extra1(x))
-        #log.debug(f"x.shape before 2nd warp and pad: {x.shape}")
+       #log.debug(f"x.shape before 2nd warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
-        #log.debug(f"x.shape after 2nd warp and pad: {x.shape}")
+       #log.debug(f"x.shape after 2nd warp and pad: {x.shape}")
         x = self.relu(self.conv_extra2(x))
-        #log.debug(f"x.shape before 3rd warp and pad: {x.shape}")
+       #log.debug(f"x.shape before 3rd warp and pad: {x.shape}")
         x = self.warp_pad_columns(x, 1)
-        #log.debug(f"x.shape after 3rd warp and pad: {x.shape}")
+       #log.debug(f"x.shape after 3rd warp and pad: {x.shape}")
         x = self.relu(self.conv_extra3(x))
-        #log.debug(f"Returning x shape (before permutation): {x.shape}")
+       #log.debug(f"Returning x shape (before permutation): {x.shape}")
         x=x.permute(0,2,3,1)
-        #log.debug(f"Returning x shape (after permutation): {x.shape}")
+       #log.debug(f"Returning x shape (after permutation): {x.shape}")
         return x
 
 
@@ -329,7 +329,7 @@ class GroundToAerialMatchingModel(nn.Module):
     Complete Ground-to-Aerial image matching model with three VGG branches
     """
     def __init__(self):
-        #log.debug("Initializing GroundToAerialMatchingModel...")
+       #log.debug("Initializing GroundToAerialMatchingModel...")
         super(GroundToAerialMatchingModel, self).__init__()
         # Three parallel VGG branches
         self.ground_branch = VGGGroundBranch()
@@ -340,12 +340,12 @@ class GroundToAerialMatchingModel(nn.Module):
 
     def forward(self, ground_img, polar_sat_img, segmap_img, return_features=False):
         # Extract features from each branch
-        #log.debug("Forward pass through GroundToAerialMatchingModel...")
-        #log.debug(f"Ground image shape: {ground_img.shape}")
+       #log.debug("Forward pass through GroundToAerialMatchingModel...")
+       #log.debug(f"Ground image shape: {ground_img.shape}")
         grd_features = self.ground_branch(ground_img)
-        #log.debug(f"Satellite image shape: {polar_sat_img.shape}")
+       #log.debug(f"Satellite image shape: {polar_sat_img.shape}")
         sat_features = self.satellite_branch(polar_sat_img)
-        #log.debug(f"Segmentation map shape: {segmap_img.shape}")
+       #log.debug(f"Segmentation map shape: {segmap_img.shape}")
         segmap_features = self.segmap_branch(segmap_img)
 
         if return_features:
@@ -362,10 +362,10 @@ class GroundToAerialMatchingModel(nn.Module):
         sat_matrix, grd_matrix, distance, pred_orien = self.processor.VGG_13_conv_v2_cir(
             sat_combined, grd_features
         )
-        #log.debug(f"Final pred sat_matrix shape: {sat_matrix.shape}")
-        #log.debug(f"Final pred grd_matrix shape: {grd_matrix.shape}")
-        #log.debug(f"Final pred distance shape: {distance.shape}")
-        #log.debug(f"Final pred pred_orien shape: {pred_orien.shape}")
+       #log.debug(f"Final pred sat_matrix shape: {sat_matrix.shape}")
+       #log.debug(f"Final pred grd_matrix shape: {grd_matrix.shape}")
+       #log.debug(f"Final pred distance shape: {distance.shape}")
+       #log.debug(f"Final pred pred_orien shape: {pred_orien.shape}")
         return sat_matrix, grd_matrix, distance, pred_orien
 
     def get_feature_dimensions(self, input_shapes):
