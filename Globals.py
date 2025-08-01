@@ -3,9 +3,9 @@ import logging
 
 config = {
     "name": "MODEL CONFIGURATION",
-    "epochs":10,
+    "epochs":30,
     "learning_rate":0.00001,
-    "batch_size":8,
+    "batch_size":32,
     "loss_weight":10.0,
     "train_grd_FOV": 360,
     "test_grd_FOV": 360,

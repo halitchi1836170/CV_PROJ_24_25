@@ -338,7 +338,7 @@ class GroundToAerialMatchingModel(nn.Module):
         # Feature processor
         self.processor = ProcessFeatures()
 
-    def forward(self, ground_img, polar_sat_img, segmap_img, return_features=False):
+    def forward(self, ground_img, polar_sat_img, segmap_img):
         # Extract features from each branch
        #log.debug("Forward pass through GroundToAerialMatchingModel...")
        #log.debug(f"Ground image shape: {ground_img.shape}")
@@ -347,9 +347,6 @@ class GroundToAerialMatchingModel(nn.Module):
         sat_features = self.satellite_branch(polar_sat_img)
        #log.debug(f"Segmentation map shape: {segmap_img.shape}")
         segmap_features = self.segmap_branch(segmap_img)
-
-        if return_features:
-            return grd_features, sat_features, segmap_features
 
         # L2 normalize ground features
         norm = torch.norm(grd_features, p=2, dim=[1, 2, 3], keepdim=True)
