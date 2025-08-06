@@ -5,19 +5,17 @@ import sys
 import logging
 from datetime import datetime
 from typing import List, Tuple
-
 import numpy as np
 import scipy.io as scio
 import torch
-
 torch.backends.cudnn.enabled = False
 torch.backends.cudnn.benchmark = False
-
 from tqdm import tqdm
-
 from Data import InputData
-from Globals import folders_and_files, config
+from Globals import folders_and_files, config, images_params
 from Network import GroundToAerialMatchingModel
+from Train import validate_original
+import shutil
 
 EXPERIMENTS = {
     "BASE": {"use_attention": False, "remove_sky": False},
@@ -33,9 +31,15 @@ import matplotlib.pyplot as plt
 
 from torch.nn import functional as F
 
-logs_folder = folders_and_files["log_folder"]
+logs_folder = f'{folders_and_files["log_folder"]}/EVALUATION'
+shutil.rmtree(logs_folder,ignore_errors=True)
+os.makedirs(logs_folder,exist_ok=True)
+
+FILE_LOGFORMAT = "%(asctime)s - %(levelname)s - %(funcName)s | %(message)s"
+file_formatter  = logging.Formatter(FILE_LOGFORMAT)
 streamFile = logging.FileHandler(filename=f"{logs_folder}/{folders_and_files['log_file']}_final_evaluation", mode="w", encoding="utf-8")
 streamFile.setLevel(logging.DEBUG)
+streamFile.setFormatter(file_formatter)
 log.addHandler(streamFile)
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
@@ -97,7 +101,7 @@ def plot_top5_matches(save_path, data: InputData, dist_array: np.ndarray, num_ex
             axes[i, j+3].imshow(sat_img)
             title = f"Top-{j+1}"
             if top5_idx[j] == correct_idx:
-                title += "OK"
+                title += " OK"
                 axes[i, j+3].spines['bottom'].set_color('green')
                 axes[i, j+3].spines['bottom'].set_linewidth(4)
             elif j == 0:
@@ -142,33 +146,6 @@ def top1_percent_recall(dist_array: np.ndarray) -> float:
     rank = np.sum(dist_array < gt_dist[:, None], axis=1)  # posizione (0‑based)
     return np.mean(rank < top1_percent)
 
-def flatten_descriptor(feature: torch.Tensor) -> torch.Tensor:
-    return feature.reshape(feature.size(0), -1)
-
-def _distance_dot(grd_flat, sat_flat):
-    # replicazione esatta del training: satellite L2, ground NO
-    sat_flat = F.normalize(sat_flat, dim=1, eps=1e-8)
-    # (facoltativo) nessuna normalizzazione ground
-    sim = torch.matmul(grd_flat, sat_flat.t())
-    dist = 2.0 - 2.0 * sim
-    return dist
-
-def _distance_cosine(grd_flat, sat_flat):
-    grd_flat = F.normalize(grd_flat, dim=1, eps=1e-8)
-    sat_flat = F.normalize(sat_flat, dim=1, eps=1e-8)
-    sim = torch.matmul(grd_flat, sat_flat.t())          # cos θ
-    dist = 2.0 - 2.0 * sim
-    return dist
-
-def _distance_scalar_scaled(grd_flat, sat_flat):
-    # Ground non normalizzato, ma scalato da un unico fattore medio
-    scale = grd_flat.norm(p=2, dim=1).mean().clamp(min=1e-8)
-    grd_scaled = grd_flat / scale
-    sat_flat = F.normalize(sat_flat, dim=1, eps=1e-8)
-    sim = torch.matmul(grd_scaled, sat_flat.t())
-    dist = 2.0 - 2.0 * sim
-    return dist
-
 def find_checkpoints(root: str) -> List[str]:
     """Return latest `model.pth` in every experiment sub‑folder."""
     checkpoints = []
@@ -206,22 +183,52 @@ def evaluate_checkpoint(ckpt_path: str, batch_size: int = config["batch_size"], 
     n_samples = data.get_test_dataset_size()
     log.info(f"Dataset size: {n_samples} test samples")
     
-     # Accumulate descriptors
-    grd_feats, sat_feats = [], []
-    
     pbar = tqdm(total=n_samples, ncols=80, desc="Inferencing", unit="img")
     
     eval_batch_losses = []
     name = os.path.basename(os.path.dirname(os.path.dirname(ckpt_path)))
-    eval_loss_path = os.path.join(folders_and_files["log_folder"],f"{name}", f"{name}_eval_losses.npy")
+
+    # Logs folder
+    local_logs_folder = os.path.join(folders_and_files["log_folder"],"EVALUATION",""f"{name}")
+    os.makedirs(local_logs_folder,exist_ok=True)
+    
+    eval_loss_path = os.path.join(local_logs_folder, f"{name}_eval_losses.npy")
 
     counter = 0
+    
+    train_grd_FOV = config["train_grd_FOV"]
+    max_angle = images_params["max_angle"]
+    max_width = images_params["max_width"]
+    width = int(train_grd_FOV / max_angle * max_width)
+    
+    grd_x = torch.zeros([2, int(max_width/4), width,3]).to(device)                             #ORDINE CAMBIATO: B (batch size)-C (channels)-H-W
+    sat_x = torch.zeros([2, int(max_width/2), max_width,3]).to(device)
+    polar_sat_x = torch.zeros([2, int(max_width/4), max_width,3]).to(device)
+    segmap_x = torch.zeros([2, int(max_width/4), max_width,3]).to(device)
+    
+    sat_matrix, grd_matrix, distance, pred_orien = model(grd_x, polar_sat_x, segmap_x)
+    s_height, s_width, s_channel = list(sat_matrix.size())[1:]
+    g_height, g_width, g_channel = list(grd_matrix.size())[1:]
+    
+    sat_global_matrix = np.zeros([data.get_test_dataset_size(), s_height, s_width, s_channel])
+    grd_global_matrix = np.zeros([data.get_test_dataset_size(), g_height, g_width, g_channel])
+    orientation_gth = np.zeros([data.get_test_dataset_size()])
+    
+    val_i=0
+    
+    epoch_r1 = []
+    epoch_r5 = []
+    epoch_r10 = []
+    epoch_top1_percent_recall = []
+    
+    iter_recalls_r1 = []
+    iter_recalls_r5 = []
+    iter_recalls_r10 = []
+    iter_top1_percent_recall = []
+        
     while True:
-        if counter + 1 <= 0:
-            log.info(f"Calling next_batch_scan on {counter + 1}...")
-        batch_sat_polar, _, batch_grd, batch_segmap, _ = data.next_batch_scan(batch_size, grd_noise=grd_noise, FOV=grd_FOV)
-        if counter + 1 <= 0:
-            log.info("Batch composed, processing...")
+        log.info(f"ITERATION {counter + 1}/{int(n_samples/batch_size)}...")
+        batch_sat_polar, _, batch_grd, batch_segmap, batch_orien = data.next_batch_scan(batch_size, grd_noise=grd_noise, FOV=grd_FOV)
         
         if batch_sat_polar is None:
             break
@@ -233,6 +240,30 @@ def evaluate_checkpoint(ckpt_path: str, batch_size: int = config["batch_size"], 
         with torch.no_grad():
             sat_mat, grd_mat, distance, _ = model(grd, sat_polar, seg)
             loss_value = compute_triplet_loss(distance,loss_weight=config["loss_weight"]).item()
+            
+            g_height, g_width, g_channel = list(grd_mat.size())[1:]
+            grd_batch_matrix = np.zeros([batch_size, g_height, g_width, g_channel])
+            grd_batch_matrix[0:grd_mat.shape[0],:]=grd_mat.cpu().detach().numpy()
+            grd_batch_descriptor = np.reshape(grd_batch_matrix,[-1,g_height*g_width*g_channel])
+            data_batch_amount = grd_batch_descriptor.shape[0]
+            top1_percent_batch_value = int(data_batch_amount*0.01)+1
+            
+            val_batch_accuracy = validate_original(distance.cpu().detach().numpy(),1)*100 
+            r5_batch = validate_original(distance.cpu().detach().numpy(),5)*100
+            r10_batch = validate_original(distance.cpu().detach().numpy(),10)*100
+            r1p_batch = validate_original(distance.cpu().detach().numpy(),top1_percent_batch_value)*100
+            
+            iter_recalls_r1.append(val_batch_accuracy)
+            iter_recalls_r5.append(r5_batch)
+            iter_recalls_r10.append(r10_batch)
+            iter_top1_percent_recall.append(r1p_batch)
+            
+            log.info(f"EVALUATION (DISTANCE), R@1: {val_batch_accuracy:.2f}%, R@5: {r5_batch:.2f}%, R@10: {r10_batch:.2f}%, R@1%: {r1p_batch:.2f}% with Samples 1%: {top1_percent_batch_value}\n") 
+        
+        sat_global_matrix[val_i:val_i+sat_mat.shape[0],:]=sat_mat.cpu().detach().numpy()
+        grd_global_matrix[val_i:val_i+grd_mat.shape[0],:]=grd_mat.cpu().detach().numpy()
+        orientation_gth[val_i:val_i+grd_mat.shape[0]]=batch_orien
+        
         eval_batch_losses.append(loss_value)
         
         #if(counter+1 <= 5):
@@ -240,37 +271,65 @@ def evaluate_checkpoint(ckpt_path: str, batch_size: int = config["batch_size"], 
         #    log.info("grd_mat shape: %s, sat_mat shape: %s", grd_mat.shape, sat_mat.shape)
         #    log.info("flattened grd_mat shape: %s, flattened sat_mat shape: %s", flatten_descriptor(grd_mat).cpu().shape, flatten_descriptor(sat_mat).cpu().shape)
             
-        grd_feats.append(flatten_descriptor(grd_mat).cpu())   # [B, D]
-        sat_feats.append(flatten_descriptor(sat_mat).cpu())   # [B, D]
+        # grd_feats.append(flatten_descriptor(grd_mat).cpu())   # [B, D]
+        # sat_feats.append(flatten_descriptor(sat_mat).cpu())   # [B, D]
 
-        pbar.update(grd_mat.shape[0])
+        # pbar.update(grd_mat.shape[0])
         
         counter += 1
+        val_i += sat_matrix.shape[0]
+        
     pbar.close()
     
-    grd_descriptor = torch.concat(grd_feats, dim=0)      # [N, D]
-    sat_descriptor = torch.concat(sat_feats, dim=0)      # [N, D]
-    assert grd_descriptor.shape == sat_descriptor.shape, "Ground-Sat Evaluation Shape mismatch"
+    epoch_r1.append(iter_recalls_r1)
+    epoch_r5.append(iter_recalls_r5)
+    epoch_r10.append(iter_recalls_r10)
+    epoch_top1_percent_recall.append(iter_top1_percent_recall)
     
-    dist_train_like   = _distance_dot(grd_descriptor, sat_descriptor) 
-    dist_cosine       = _distance_cosine(grd_descriptor, sat_descriptor)
-    dist_scalar_scale = _distance_scalar_scaled(grd_descriptor, sat_descriptor)
+    np.save(os.path.join(local_logs_folder, "epoch_r1.npy"), np.array(epoch_r1, dtype=object))
+    np.save(os.path.join(local_logs_folder, "epoch_r5.npy"), np.array(epoch_r5, dtype=object))
+    np.save(os.path.join(local_logs_folder, "epoch_r10.npy"), np.array(epoch_r10, dtype=object))
+    np.save(os.path.join(local_logs_folder, "epoch_top1_percent_recall.npy"), np.array(epoch_top1_percent_recall, dtype=object))
     
-    dist_train_like_np   = dist_train_like.cpu().numpy() 
-    dist_cosine_np       = dist_cosine.cpu().numpy() 
-    dist_scalar_scale_np = dist_scalar_scale.cpu().numpy() 
+    sat_descriptor = np.reshape(sat_global_matrix[:,:,:g_width,:],[-1,g_height*g_width*g_channel])
+    norm = np.linalg.norm(sat_descriptor, axis=-1, keepdims=True)
+    sat_descriptor = sat_descriptor / np.maximum(norm,1e-12)
+    grd_descriptor = np.reshape(grd_global_matrix,[-1,g_height*g_width*g_channel])
     
-    for name, dist in {
-        "train-like": dist_train_like,
-        "cosine"    : dist_cosine,
-        "scaled"    : dist_scalar_scale,
-    }.items():
+    data_amount = grd_descriptor.shape[0]
+    top1_percent_value = int(data_amount*0.01)+1
+    dist_array = 2.0-2.0*np.matmul(grd_descriptor,np.transpose(sat_descriptor))
+    
+    val_accuracy = validate_original(dist_array,1)*100 
+    r5_epoch = validate_original(dist_array,5)*100
+    r10_epoch = validate_original(dist_array,10)*100
+    r1p_epoch = validate_original(dist_array,top1_percent_value)*100
+    
+    log.info(f"FINAL LOG - EVALUATION, SAMPLES 1%: {top1_percent_value}, R@1: {val_accuracy:.2f}%, R@5: {r5_epoch:.2f}%, R@10: {r10_epoch:.2f}%, R@1%: {r1p_epoch:.2f}%")
+    
+    #grd_descriptor = torch.concat(grd_feats, dim=0)      # [N, D]
+    #sat_descriptor = torch.concat(sat_feats, dim=0)      # [N, D]
+    #assert grd_descriptor.shape == sat_descriptor.shape, "Ground-Sat Evaluation Shape mismatch"
+    
+    # dist_train_like   = _distance_dot(grd_descriptor, sat_descriptor) 
+    # dist_cosine       = _distance_cosine(grd_descriptor, sat_descriptor)
+    # dist_scalar_scale = _distance_scalar_scaled(grd_descriptor, sat_descriptor)
+    
+    # dist_train_like_np   = dist_train_like.cpu().numpy() 
+    # dist_cosine_np       = dist_cosine.cpu().numpy() 
+    # dist_scalar_scale_np = dist_scalar_scale.cpu().numpy() 
+    
+    # for name, dist in {
+    #     "train-like": dist_train_like,
+    #     "cosine"    : dist_cosine,
+    #     "scaled"    : dist_scalar_scale,
+    # }.items():
 
-        r1  = recall_at_k(dist, 1) * 100
-        r5  = recall_at_k(dist, 5) * 100
-        r10 = recall_at_k(dist,10) * 100
-        r1p = top1_percent_recall(dist.numpy()) * 100   # se vuoi riusare la tua
-        log.info(f"[{name}]: Top-1 recall: {r1:5.2f}  Top-5 recall {r5:5.2f}  Top-10 recall {r10:5.2f}  Top-1% recall {r1p:5.2f}")
+    #     r1  = recall_at_k(dist, 1) * 100
+    #     r5  = recall_at_k(dist, 5) * 100
+    #     r10 = recall_at_k(dist,10) * 100
+    #     r1p = top1_percent_recall(dist.numpy()) * 100   # se vuoi riusare la tua
+    #     log.info(f"[{name}]: Top-1 recall: {r1:5.2f}  Top-5 recall {r5:5.2f}  Top-10 recall {r10:5.2f}  Top-1% recall {r1p:5.2f}")
     
     
     #out_mat = os.path.join(os.path.dirname(ckpt_path), "descriptors.mat")
@@ -288,18 +347,13 @@ def evaluate_checkpoint(ckpt_path: str, batch_size: int = config["batch_size"], 
     
     checkpoint_experiment_name = os.path.basename(os.path.dirname(os.path.dirname(ckpt_path)))
     
-    cmc = compute_cmc(dist_train_like_np)
+    cmc = compute_cmc(dist_array)
     
     # Plot top-5 matches
     num_examples_plot=5
     save_path = os.path.join(folders_and_files["plots_folder"],f"{checkpoint_experiment_name}", f"{checkpoint_experiment_name}_top_{num_examples_plot}_matches.png")
     log.info(f"Plotting top-{num_examples_plot} matches to {save_path}...")   
-    plot_top5_matches(
-        save_path,
-        data,
-        dist_train_like_np,
-        num_examples_plot
-    )
+    plot_top5_matches(save_path,data,dist_array,num_examples_plot)
     
     log.info("Saving evaluation losses...\n")
     np.save(eval_loss_path, np.array(eval_batch_losses))
