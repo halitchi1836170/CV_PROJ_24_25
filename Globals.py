@@ -4,7 +4,7 @@ import logging
 config = {
     "name": "MODEL CONFIGURATION",
     "epochs":30,
-    "learning_rate":0.00001,
+    "learning_rate":0.00002,
     "batch_size":32,
     "loss_weight":10.0,
     "train_grd_FOV": 360,
@@ -14,11 +14,12 @@ config = {
     "vgg_default_weights": VGG16_Weights.IMAGENET1K_V1,
     "train_grd_noise": 360,
     "log_frequency": 10,
+    "save_cam_png_frequency":50,
     "seed":17
 }
 
 folders_and_files = {
-    "log_file": "log",
+    "log_file": "log.log",
     "saved_models_folder": "./models",
     "log_folder":"./logs",
     "plots_folder": "./plots",
