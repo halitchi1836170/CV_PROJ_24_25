@@ -12,6 +12,7 @@ import logging
 import random
 import cv2
 import torch.nn.functional as F
+import shutil
 
 def recall_at_k(dist_mat: torch.Tensor, k: int) -> float:
     _, idx = dist_mat.topk(k, largest=False)      # più vicino = distanza minima
@@ -76,16 +77,24 @@ def train_model(experiment_name, overrides):
     models_folder = os.path.join(folders_and_files["saved_models_folder"], experiment_name)
     plots_folder = os.path.join(folders_and_files["plots_folder"], experiment_name)
     
+    shutil.rmtree(logs_folder,ignore_errors=True)
     os.makedirs(logs_folder, exist_ok=True)
+    
+    shutil.rmtree(models_folder,ignore_errors=True)
     os.makedirs(models_folder, exist_ok=True)
+    
+    shutil.rmtree(plots_folder,ignore_errors=True)
     os.makedirs(plots_folder, exist_ok=True)
     
     experiments_config["logs_folder"] = logs_folder
     experiments_config["saved_models_folder"] = models_folder
     experiments_config["plots_folder"] = plots_folder
     
+    FILE_LOGFORMAT = "%(asctime)s - %(levelname)s - %(funcName)s | %(message)s"
+    file_formatter  = logging.Formatter(FILE_LOGFORMAT)
     streamFile = logging.FileHandler(filename=f"{logs_folder}/{folders_and_files['log_file']}", mode="w", encoding="utf-8")
     streamFile.setLevel(logging.DEBUG)
+    streamFile.setFormatter(file_formatter)
     log.addHandler(streamFile)
     
     log.info(get_header_title(f"SETTING UP - {experiment_name}"))
@@ -134,16 +143,6 @@ def train_model(experiment_name, overrides):
     log.info(f"Segmentation (zero) input matrix dimension: {segmap_x.shape}")
     log.info(get_header_title("END", new_line=True))
 
-    log.info(get_header_title("FIRST FEATURES"))
-    log.info("Calculating (forward pass) first features (zeros as input) ...")
-    grd_features, sat_features, segmap_features = model(grd_x, polar_sat_x, segmap_x, return_features=True)
-    log.info(f"Ground features (zero input) matrix dimension: {grd_features.shape}")
-    log.info(f"Polar satellite features (zero input) matrix dimension: {sat_features.shape}")
-    log.info(f"Segmentation features (zero input) matrix dimension: {segmap_features.shape}")
-    sat_features = torch.concat([sat_features, segmap_features], dim=3)
-    log.info(f"Concatenated Satellite and Segmentation features (zero input) matrix dimension: {sat_features.shape}")
-    log.info(get_header_title("END", new_line=True))
-
     log.info(get_header_title("CORRELATION MATRICES"))
     log.info("Calculating correlation matrices...")
     sat_matrix, grd_matrix, distance, pred_orien = model(grd_x, polar_sat_x, segmap_x)
@@ -157,7 +156,7 @@ def train_model(experiment_name, overrides):
     log.info(f"Orientation matrix dimensions: {orientation_gth.shape}")
     log.info(get_header_title("END", new_line=True))
     
-    log.info(get_header_title("STARTING TRAINING"))
+    log.info(get_header_title(f"STARTING TRAINING - {experiment_name}"))
     
     # Device
     log.info(f"Using device: {device}")
@@ -180,7 +179,7 @@ def train_model(experiment_name, overrides):
     for epoch in range(number_of_epoch):
         
         input_data.__cur_id = 0
-        random.shuffle(input_data.id_idx_list)  # <== AGGIUNGI QUESTO
+        #random.shuffle(input_data.id_idx_list)  # <== AGGIUNGI QUESTO
         
         log.info(f"Epoch {epoch + 1}/{config['epochs']}")
         
@@ -194,12 +193,26 @@ def train_model(experiment_name, overrides):
         iter_recalls_r10 = []
         iter_top1_percent_recall = []
         iter_count = 0
+        val_i=0
         end = False
+        
+        sat_global_matrix = np.zeros([input_data.get_dataset_size(), s_height, s_width, s_channel])
+        grd_global_matrix = np.zeros([input_data.get_dataset_size(), g_height, g_width, g_channel])
+        orientation_gth = np.zeros([input_data.get_dataset_size()])
         
         while not end:
             
             optimizer.zero_grad()
             grd_feats, sat_feats = [],[]
+            
+            sat_batch_matrix = np.zeros([config["batch_size"], s_height, s_width, s_channel])
+            grd_batch_matrix = np.zeros([config["batch_size"], g_height, g_width, g_channel])
+            orientation_batch_gth = np.zeros([config["batch_size"]])
+            
+            if(iter_count==-1):
+                log.debug(f"sat_batch_matrix zeros shape: {sat_batch_matrix.shape}")
+                log.debug(f"grd_batch_matrix zeros shape: {grd_batch_matrix.shape}")
+                log.debug(f"orientation_batch_gth zeros shape: {orientation_batch_gth.shape}")
             
             batch_sat_polar, batch_sat, batch_grd, batch_segmap, batch_orien = input_data.next_pair_batch(config["batch_size"], grd_noise=config["train_grd_noise"], FOV=train_grd_FOV)
                 
@@ -222,14 +235,9 @@ def train_model(experiment_name, overrides):
             # Compute the loss
             loss_value = compute_triplet_loss(distance,loss_weight=config["loss_weight"])
             #loss_value = loss_value / 4  # Divide by accumulation steps
-                   
-            accuracy = compute_top1_accuracy(distance)
-            if iter_count % config["log_frequency"] == 0:
-                log.info(f"EPOCH {epoch + 1}/{config['epochs']}, ITER {iter_count}, ACCURACY: {accuracy:.4f}")
             
             if experiments_config["use_attention"]:
-                #gradcam = GradCAM(model.ground_branch, gradcam_config["target_layer"])
-                #loss_value.backward(retain_graph=True)
+                loss_value.backward(retain_graph=True)
                 cam_size = (batch_grd.shape[1], batch_grd.shape[2])
                 saliency_loss = compute_saliency_loss(gradcam, batch_grd, cam_size)
                 total_loss_batch = loss_value + gradcam_config["lambda_saliency"] * saliency_loss
@@ -245,41 +253,95 @@ def train_model(experiment_name, overrides):
                 
             optimizer.step()
             
-            grd_feats.append(flatten_descriptor(grd_matrix).cpu())   # [B, D]
-            sat_feats.append(flatten_descriptor(sat_matrix).cpu())   # [B, D]
+            #Popolo matrice sat_global_matrix per valutazione ad ogni epoca
+            sat_global_matrix[val_i:val_i+sat_matrix.shape[0],:]=sat_matrix.cpu().detach().numpy()
+            grd_global_matrix[val_i:val_i+grd_matrix.shape[0],:]=grd_matrix.cpu().detach().numpy()
+            orientation_gth[val_i:val_i+grd_matrix.shape[0]]=batch_orien
             
-            grd_descriptor = torch.concat(grd_feats, dim=0)      # [N, D]
-            sat_descriptor = torch.concat(sat_feats, dim=0)      # [N, D]
-            assert grd_descriptor.shape == sat_descriptor.shape, "Ground-Sat Evaluation Shape mismatch"
+            #Popolo matrice sat_batch_matrix per valutazione ad ogni batch
+            sat_batch_matrix[0:sat_matrix.shape[0],:]=sat_matrix.cpu().detach().numpy()
+            grd_batch_matrix[0:grd_matrix.shape[0],:]=grd_matrix.cpu().detach().numpy()
+            orientation_batch_gth[0:grd_matrix.shape[0]]=batch_orien
             
-            dist_train_like   = _distance_dot(grd_descriptor, sat_descriptor) 
-            dist_cosine       = _distance_cosine(grd_descriptor, sat_descriptor)
-            dist_scalar_scale = _distance_scalar_scaled(grd_descriptor, sat_descriptor)
+            if(iter_count==-1):
+                log.debug(f"sat_batch_matrix shape after evaluation: {sat_batch_matrix.shape}")
+                log.debug(f"grd_batch_matrix shape after evaluation: {grd_batch_matrix.shape}")
+                log.debug(f"orientation_batch_gth shape after evaluation: {orientation_batch_gth.shape}")
             
-            for name, dist in {"train-like": dist_train_like,"cosine"    : dist_cosine,"scaled"    : dist_scalar_scale,}.items():
-                r1  = recall_at_k(dist, 1) * 100
-                r5  = recall_at_k(dist, 5) * 100
-                r10 = recall_at_k(dist,10) * 100
-                r1p = top1_percent_recall(dist.detach().numpy()) * 100
+            sat_batch_descriptor = np.reshape(sat_batch_matrix[:,:,:g_width,:],[-1,g_height*g_width*g_channel])
+            norm = np.linalg.norm(sat_batch_descriptor, axis=-1, keepdims=True)
+            sat_batch_descriptor = sat_batch_descriptor / np.maximum(norm,1e-12)
+            grd_batch_descriptor = np.reshape(grd_batch_matrix,[-1,g_height*g_width*g_channel])
+            
+            data_batch_amount = grd_batch_descriptor.shape[0]
+            top1_percent_batch_value = int(data_batch_amount*0.01)+1
+            
+            dist_array = 2.0-2.0*np.matmul(grd_batch_descriptor,np.transpose(sat_batch_descriptor))
+            val_batch_accuracy = validate_original(dist_array,1)*100 
+            r5_batch = validate_original(dist_array,5)*100
+            r10_batch = validate_original(dist_array,10)*100
+            r1p_batch = validate_original(dist_array,top1_percent_batch_value)*100
+            
+            if(iter_count == -1):
+                log.debug(f"sat_batch_descriptor shape: {sat_batch_descriptor.shape}")
+                log.debug(f"grd_batch_descriptor shape: {grd_batch_descriptor.shape}")
+                log.debug(f"data_batch_amount: {data_batch_amount}")
+                log.debug(f"1% samples of the data batch: {top1_percent_batch_value}")
+                #log.debug("printing dist_array...")
+                #log.debug(dist_array)
+                #log.debug("printing distance...")
+                #log.debug(distance)
                 
-                iter_recalls_r1.append(r1)
-                iter_recalls_r5.append(r5)
-                iter_recalls_r10.append(r10)
-                iter_top1_percent_recall.append(r1p)
-                
-                if iter_count % config["log_frequency"] == 0:
-                    log.info(f"---> DISTANCE {name} - R@1: {r1:.2f}%, R@5: {r5:.2f}%, R@10: {r10:.2f}%, Top-1% Recall: {r1p:.2f}%")
+                val_batch_accuracy = validate_original(distance.cpu().detach().numpy(),1)*100 
+                r5_batch = validate_original(distance.cpu().detach().numpy(),5)*100
+                r10_batch = validate_original(distance.cpu().detach().numpy(),10)*100
+                r1p_batch = validate_original(distance.cpu().detach().numpy(),top1_percent_batch_value)*100
+                log.info(f"---> ITERATION: {iter_count},(DISTANCE) R@1: {val_batch_accuracy:.2f}%, R@5: {r5_batch:.2f}%, R@10: {r10_batch:.2f}%, R@1%: {r1p_batch:.2f}% with Samples 1%: {top1_percent_batch_value}") 
             
-            if iter_count % config["log_frequency"] == 0:    
+            val_i += sat_matrix.shape[0]
+                
+            iter_recalls_r1.append(val_batch_accuracy)
+            iter_recalls_r5.append(r5_batch)
+            iter_recalls_r10.append(r10_batch)
+            iter_top1_percent_recall.append(r1p_batch)
+            
+            if iter_count % config["log_frequency"] == 0:
                 #log.info(f"ITERATION: {iter_count}, mini-Batch {i+1} LOSS VALUE: {total_loss_batch.item() * 4:.6f}, TOTAL LOSS: {total_loss:.6f}")
-                log.info(f"---> ITERATION: {iter_count}, BATCH LOSS VALUE: {total_loss_batch.item():.6f}, (PARTIAL INCREASING) TOTAL EPOCH LOSS: {total_loss:.6f}")
-                if experiments_config["use_attention"]:
+                log.info(f"---> ITERATION: {iter_count}, R@1: {val_batch_accuracy:.2f}%, R@5: {r5_batch:.2f}%, R@10: {r10_batch:.2f}%, R@1%: {r1p_batch:.2f}% with Samples 1%: {top1_percent_batch_value}")
+                log.info(f"---> ITERATION: {iter_count}, BATCH LOSS VALUE: {total_loss_batch.item():.6f}, (PARTIAL INCREASING) TOTAL EPOCH LOSS: {total_loss:.6f}") 
+                if iter_count % config["save_cam_png_frequency"] == 0 and experiments_config["use_attention"]:
                     heatmap_np = gradcam.generate(cam_size)
-                    save_overlay_image(batch_grd[0], heatmap_np[0], path=f"{experiments_config['plots_folder']}/epoch{epoch+1}_iter{iter_count}_cam.png")
+                    save_overlay_image(batch_grd[0], heatmap_np[0], path=f"{plots_folder}/epoch{epoch+1}_iter{iter_count}_cam.png", alpha=0.75)
                     
             iter_count += 1
 
-        log.info(f"FINAL LOG - ITERATION: {iter_count}, LOSS VALUE: {total_loss_batch.item():.6f}, TOTAL LOSS: {total_loss:.6f}")
+        sat_descriptor = np.reshape(sat_global_matrix[:,:,:g_width,:],[-1,g_height*g_width*g_channel])
+        norm = np.linalg.norm(sat_descriptor, axis=-1, keepdims=True)
+        sat_descriptor = sat_descriptor / np.maximum(norm,1e-12)
+        grd_descriptor = np.reshape(grd_global_matrix,[-1,g_height*g_width*g_channel])
+        
+        data_amount = grd_descriptor.shape[0]
+        top1_percent_value = int(data_amount*0.01)+1
+        dist_array = 2.0-2.0*np.matmul(grd_descriptor,np.transpose(sat_descriptor))
+        
+        if(epoch==-1):
+            log.debug(f"End of the firts epoch...")
+            log.debug(f"sat_descriptor shape: {sat_descriptor.shape}")
+            log.debug(f"grd_descriptor shape: {grd_descriptor.shape}")
+            log.debug(f"data_amount: {data_amount}")
+            log.debug(f"1% samples of the data batch: {top1_percent_value}")
+            #log.debug("printing dist_array...")
+            #log.debug(dist_array)
+            #log.debug("printing distance...")
+            #log.debug(distance)
+        
+        val_accuracy = validate_original(dist_array,1)*100 
+        r5_epoch = validate_original(dist_array,5)*100
+        r10_epoch = validate_original(dist_array,10)*100
+        r1p_epoch = validate_original(dist_array,top1_percent_value)*100
+        
+        log.info(f"FINAL LOG - EPOCH: {epoch+1}, ITERATION: {iter_count}, LAST BATCH LOSS VALUE: {total_loss_batch.item():.6f}, TOTAL EPOCH LOSS: {total_loss:.6f}")
+        #log.info(f"FINAL LOG - EPOCH: {epoch+1}, SAMPLES 1%: {top1_percent_value}, R@1: {val_accuracy:.4f}%, R@5: {r5_epoch:.4f}%, R@10: {r10_epoch:.4f}%, R@1%: {r1p_epoch:.4f}%")
         #if experiments_config["use_attention"]:
         #    heatmap_np = gradcam.generate(cam_size)
         #    save_overlay_image(batch_grd[0], heatmap_np[0], path=f"{experiments_config['plots_folder']}/epoch_{epoch+1}_iter{iter_count}_cam.png")
@@ -291,7 +353,7 @@ def train_model(experiment_name, overrides):
         os.makedirs(model_epoch_folder, exist_ok=True)
         
         torch.save({
-            'epoch': epoch,
+            'epoch': epoch+1,
             'model_state_dict': model.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'loss': total_loss,
@@ -320,7 +382,7 @@ def train_model(experiment_name, overrides):
     np.save(os.path.join(logs_folder, "epoch_r10.npy"), np.array(epoch_r10, dtype=object))
     np.save(os.path.join(logs_folder, "epoch_top1_percent_recall.npy"), np.array(epoch_top1_percent_recall, dtype=object))
     
-    plot_iterative_loss(epoch_losses, experiment_name, os.path.join(plots_folder, "iterative_loss.png"))
+    plot_iterative_loss(epoch_losses, experiment_name, os.path.join(plots_folder,f"{experiment_name}_training_iterative_loss.png"))
     #plot_loss_boxplot(epoch_losses, experiment_name, os.path.join(plots_folder, "loss_boxplot.png"))
     
     log.info(get_header_title(f"TRAINING COMPLETED - {experiment_name}"))    
