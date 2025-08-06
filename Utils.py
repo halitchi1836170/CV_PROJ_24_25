@@ -72,7 +72,7 @@ def get_model_summary_simple(model: Module):
 
 
 
-def save_overlay_image(image_tensor, cam_map, path, cmap='jet', alpha=0.5):
+def save_overlay_image(image_tensor, cam_map, path, cmap='jet', alpha=0.75):
     os.makedirs(os.path.dirname(path), exist_ok=True)
 
     if torch.is_tensor(image_tensor):
