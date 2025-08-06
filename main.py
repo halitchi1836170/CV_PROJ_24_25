@@ -28,8 +28,8 @@ def create_comparison_plots():
     plt.title("Confronto andamento Loss tra esperimenti in fase di training")
     plt.legend()
     plt.grid(True)
-    plt.savefig(f"{folders_and_files['plots_folder']}/loss_comparison.png")
-    log.info(f"Grafico salvato in {folders_and_files['plots_folder']}/loss_comparison.png")
+    plt.savefig(f"{folders_and_files['plots_folder']}/ALL_training_loss_comparison.png")
+    log.info(f"Grafico salvato in {folders_and_files['plots_folder']}/ALL_training_loss_comparison.png")
 
 def main():
     parser = argparse.ArgumentParser(description="Ground-Satellite Matching")
