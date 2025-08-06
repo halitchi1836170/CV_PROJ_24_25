@@ -282,21 +282,21 @@ def train_model(experiment_name, overrides):
             r10_batch = validate_original(dist_array,10)*100
             r1p_batch = validate_original(dist_array,top1_percent_batch_value)*100
             
-            if(iter_count == -1):
+            if(iter_count % config["log_frequency"] == 0):
                 log.debug(f"sat_batch_descriptor shape: {sat_batch_descriptor.shape}")
                 log.debug(f"grd_batch_descriptor shape: {grd_batch_descriptor.shape}")
                 log.debug(f"data_batch_amount: {data_batch_amount}")
                 log.debug(f"1% samples of the data batch: {top1_percent_batch_value}")
-                #log.debug("printing dist_array...")
-                #log.debug(dist_array)
-                #log.debug("printing distance...")
-                #log.debug(distance)
+                log.debug("printing dist_array...")
+                log.debug(dist_array)
+                log.debug("printing distance...")
+                log.debug(distance)
                 
-                val_batch_accuracy = validate_original(distance.cpu().detach().numpy(),1)*100 
-                r5_batch = validate_original(distance.cpu().detach().numpy(),5)*100
-                r10_batch = validate_original(distance.cpu().detach().numpy(),10)*100
-                r1p_batch = validate_original(distance.cpu().detach().numpy(),top1_percent_batch_value)*100
-                log.info(f"---> ITERATION: {iter_count},(DISTANCE) R@1: {val_batch_accuracy:.2f}%, R@5: {r5_batch:.2f}%, R@10: {r10_batch:.2f}%, R@1%: {r1p_batch:.2f}% with Samples 1%: {top1_percent_batch_value}") 
+                val_batch_accuracy_distance = validate_original(distance.cpu().detach().numpy(),1)*100 
+                r5_batch_distance = validate_original(distance.cpu().detach().numpy(),5)*100
+                r10_batch_distance = validate_original(distance.cpu().detach().numpy(),10)*100
+                r1p_batch_distance = validate_original(distance.cpu().detach().numpy(),top1_percent_batch_value)*100
+                log.info(f"---> ITERATION: {iter_count},(DISTANCE) R@1: {val_batch_accuracy_distance:.2f}%, R@5: {r5_batch_distance:.2f}%, R@10: {r10_batch_distance:.2f}%, R@1%: {r1p_batch_distance:.2f}% with Samples 1%: {top1_percent_batch_value}") 
             
             val_i += sat_matrix.shape[0]
                 

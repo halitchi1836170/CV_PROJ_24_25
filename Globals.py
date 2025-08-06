@@ -3,7 +3,7 @@ import logging
 
 config = {
     "name": "MODEL CONFIGURATION",
-    "epochs":30,
+    "epochs":1,
     "learning_rate":0.00002,
     "batch_size":32,
     "loss_weight":10.0,
@@ -59,9 +59,9 @@ sky_removal_config = {
 
 EXPERIMENTS = {
     "BASE": {"use_attention": False, "remove_sky": False},
-    "ATTENTION": {"use_attention": True, "remove_sky": False},
-    "SKYREMOVAL": {"use_attention": False, "remove_sky": True},
-    "FULL": {"use_attention": True, "remove_sky": True},
+    #"ATTENTION": {"use_attention": True, "remove_sky": False},
+    #"SKYREMOVAL": {"use_attention": False, "remove_sky": True},
+    #"FULL": {"use_attention": True, "remove_sky": True},
 }
 
 experiments_config = {
