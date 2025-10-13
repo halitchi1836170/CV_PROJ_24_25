@@ -3,9 +3,12 @@ import random
 import numpy as np
 from Globals import data_loader_config, experiments_config
 from logger import log
-from sky_removal import batch_remove_sky
-import os
-from sky_removal import remove_sky_from_image
+try:
+    from sky_removal import remove_sky_from_image
+except ImportError:
+    def remove_sky_from_image(img):
+        print("ECCEZIONE DURANTE IMPORT FUNZIONE remove_sky_from_image")
+        return img
 
 class InputData:
 
@@ -26,6 +29,10 @@ class InputData:
         self.train_list = self.img_root + data_loader_config["train_list_file_name"]
         self.test_list = self.img_root + data_loader_config["val_list_file_name"]
 
+        self.flag_ground_to_be_tracked = False
+        self.index_for_overlay = list()
+        self.index_for_name = list()
+        
         log.info('Loading %s ...' % self.train_list)
         self.__cur_id = 0  # for training
         self.id_list = []
@@ -158,6 +165,7 @@ class InputData:
                  break
 
             img_idx = self.id_idx_list[self.__cur_id+i]
+            #log.debug(f"Processing image index: {img_idx} (batch_idx={batch_idx})")
             i += 1
             
             
@@ -168,6 +176,9 @@ class InputData:
                 log.debug(f"Polar satellite image invalid: {polar_path}")
                 continue
             img = (img.astype(np.float32) / 255 - self.sat_polar_mean) / self.sat_polar_std
+            #log.debug(f"Loaded polar satellite image: {polar_path}")
+            # Valori di esempio della prima riga
+            #log.debug(f"First row values: {img[0, 0, :5]}")
             batch_sat_polar[batch_idx, :, :, :] = img
             
             # Satellite segmentazione
@@ -177,6 +188,9 @@ class InputData:
                 log.debug(f"Segmentation image invalid: {seg_path}")
                 continue
             img_s = (img_s.astype(np.float32) / 255 - self.seg_mean) / self.seg_std
+            #log.debug(f"Loaded segmentation image: {seg_path}")
+            # Valori di esempio della prima riga
+            #log.debug(f"First row values: {img_s[0, 0, :5]}")
             batch_segmap[batch_idx, :, :, :] = img_s
             
             # Satellite RGB
@@ -186,6 +200,9 @@ class InputData:
                 log.debug(f"Satellite image invalid: {sat_path}")
                 continue
             img = cv2.resize(img, (256, 256), interpolation=cv2.INTER_AREA).astype(np.float32) / 255
+            #log.debug(f"Loaded satellite image: {sat_path}")
+            # Valori di esempio della prima riga
+            #log.debug(f"First row values: {img[0, 0, :5]}")
             batch_sat[batch_idx, :, :, :] = img
             
             # Ground
@@ -196,18 +213,38 @@ class InputData:
                 continue
             
             img = cv2.resize(img, (512, 128), interpolation=cv2.INTER_AREA).astype(np.uint8)
+            #log.debug(f"Loaded ground image: {grd_path}")
+            # Valori di esempio della prima riga
+            #log.debug(f"First row values: {img[0, 0, :5]}")
             
-            if experiments_config["remove_sky"]:
-                img_no_sky = remove_sky_from_image(img)  # questa funzione accetta uint8
+            valore_numerico_indx = self.id_list[img_idx][2].replace("input", "").replace("streetview/","").replace(".png","")
+            #log.debug(f"Index to be checked: '{valore_numerico_indx}'")
+            #log.debug(f"list ground to be tracked: {data_loader_config['list_grounds_tbt']}")
+            if experiments_config["name"] != "BASE" and valore_numerico_indx in data_loader_config["list_grounds_tbt"]:
+                log.debug(f"Detected ground {valore_numerico_indx} to be tracked...")
+                self.flag_ground_to_be_tracked = True
+                self.index_for_overlay.append(batch_idx)
+                self.index_for_name.append("_"+valore_numerico_indx) 
+            
+            if experiments_config["remove_sky"] or (experiments_config["remove_sky"] and valore_numerico_indx in data_loader_config["list_grounds_tbt"]):
+                #log.debug(f"Removing sky from ground image: {grd_path}")
+                string_index_as_name = ""
+                if valore_numerico_indx in data_loader_config["list_grounds_tbt"] == True :
+                    string_index_as_name = "_"+valore_numerico_indx
+                else:
+                    string_index_as_name = ""
+                img_no_sky = remove_sky_from_image(img,string_index_as_name)  # questa funzione accetta uint8
                 img = img_no_sky
                 
             img = img.astype(np.float32) / 255
-            #img = (img - self.ground_mean) / self.ground_std
+            img = (img - self.ground_mean) / self.ground_std
             
             j = np.arange(0, 512)
             
             random_shift = int(np.random.rand() * 512 * grd_noise / 360)
             img_dup = img[:, ((j - random_shift) % 512)[:grd_width], :]
+            # Valori di esempio della prima riga
+            #log.debug(f"First row values of ground after shift: {img_dup[0, 0, :5]}")
             batch_grd[batch_idx, :, :, :] = img_dup
             
             

@@ -4,6 +4,8 @@ from torchvision.models import vgg16, VGG16_Weights
 from Globals import *
 import torch.nn.functional as F
 from logger import log
+import math
+from torch.nn.modules.utils import _pair
 
 class GradCAM:
     def __init__(self, model, target_layer_name):
@@ -22,6 +24,12 @@ class GradCAM:
         self.gradients = grad_output[0]
 
     def generate(self, target_size):
+        w = self.gradients.mean(dim=(2,3), keepdim=True)             # [B,C,1,1]
+        cam = (w * self.activations).sum(dim=1, keepdim=True).relu() # [B,1,H,W]
+        cam = F.interpolate(cam, size=target_size, mode='bilinear', align_corners=False)
+        cam = (cam - cam.amin(dim=(2,3), keepdim=True)) / (cam.amax(dim=(2,3), keepdim=True) - cam.amin(dim=(2,3), keepdim=True) + 1e-12)
+        return cam
+        
         weights = torch.mean(self.gradients, keepdim=True, dim=(2, 3))
         grad_cam = torch.sum(weights * self.activations, dim=1, keepdim=True)
         grad_cam = F.relu(grad_cam)
@@ -29,12 +37,43 @@ class GradCAM:
         grad_cam = (grad_cam - grad_cam.min()) / (grad_cam.max() - grad_cam.min() + 1e-12)
         return grad_cam.squeeze().detach().cpu().numpy()
 
+def gradcam_from_activations(acts: torch.Tensor, target_scalar: torch.Tensor, upsample_to_hw=None, normalize=True):
+    # Gradiente dL/dA_k
+    grads = torch.autograd.grad(target_scalar, acts, retain_graph=True, create_graph=True)[0]   # [B,C,H,W]
+
+    # Pesi alpha_k = media spaziale dei gradienti
+    weights = grads.mean(dim=(2,3), keepdim=True)                                              # [B,C,1,1]
+
+    # CAM = ReLU( sum_k alpha_k * A_k )
+    cam = (weights * acts).sum(dim=1, keepdim=True)                                            # [B,1,H,W]
+    cam = F.relu(cam)
+
+    # Normalizzazione per-campione
+    if normalize:
+        cam = cam / (cam.amax(dim=(2,3), keepdim=True) + 1e-12)
+
+    # Upsample opzionale
+    if upsample_to_hw is not None:
+        cam = F.interpolate(cam, size=upsample_to_hw, mode="bilinear", align_corners=False)    # [B,1,H0,W0]
+
+    return cam.squeeze(1) 
 
 def compute_saliency_loss(gradcam, inputs, cam_size):
+    cam = gradcam.generate(target_size=cam_size)  # tensor con grad
+    return -cam.mean()
     cam = gradcam.generate(target_size=cam_size)
     cam_tensor = torch.from_numpy(cam).to(inputs.device)
     return -torch.mean(cam_tensor)
 
+def saliency_variability_loss(cams:torch.Tensor, eps=1e-12):
+    B,H,W=cams.shape
+    W=cams.std(dim=0,unbiased=False)
+    W=(W - W.min()) / (W.max() - W.min() + eps)
+    cams_flat = cams.view(B, -1)                          # [B,HW]
+    W_flat = W.view(-1)                                   # [HW]
+    overlap = (cams_flat * W_flat).sum(dim=1) / (cams_flat.sum(dim=1) + eps)   # [B]
+    score = overlap.mean()
+    return 1.0 - score
 
 class ProcessFeatures(nn.Module):
     """
@@ -54,16 +93,19 @@ class ProcessFeatures(nn.Module):
 
     def corr_crop_distance(self, sat_vgg, grd_vgg):
         corr_out, corr_orien = self.corr(sat_vgg, grd_vgg)
+        #log.debug("Output of corr method:")
+        #log.debug(f"corr_orien values: {corr_orien[0,:5]}")
         sat_cropped = self.crop_sat(sat_vgg, corr_orien, grd_vgg.size()[2])
+        #log.debug(f"sat_cropped values: {sat_cropped[0,0,0,0,:5]}")
         #log.debug(f"sat_cropped shape: {sat_cropped.shape} after cropping in corr_cropdistance method")
         # shape = [batch_sat, batch_grd, h, grd_width, channel]
 
         norm = torch.norm(sat_cropped, p=2, dim=[2,3,4], keepdim=True)
         sat_matrix = sat_cropped / norm.clamp_min(1e-12)
 
-        grd_expanded = grd_vgg.unsqueeze(0)
+        grd_expanded = grd_vgg.unsqueeze(0) 
         dot_product = torch.sum(sat_matrix * grd_expanded, dim=[2, 3, 4])
-        distance = 2 - 2 * dot_product.t()
+        distance = 2.0 - 2.0 * dot_product.t()
         # shape = [batch_grd, batch_sat]
         #log.debug(f"distance shape: {distance.shape} after computing distance in corr_crop_distance method")
 
@@ -78,32 +120,39 @@ class ProcessFeatures(nn.Module):
         batch_sat, s_h, s_w, s_c = sat_matrix.shape
         batch_grd, g_h, g_w, g_c = grd_matrix.shape
 
-        assert s_h == g_h, s_c == g_c  # devono avere la stessa altezza e lo stesso numero di canali
+        assert (s_h == g_h) and (s_c == g_c)  # devono avere la stessa altezza e lo stesso numero di canali
 
-        #log.debug("Starting correlation computation...")
-        #log.debug(f"sat_matrix shape: {sat_matrix.shape}")
-        #log.debug(f"grd_matrix shape: {grd_matrix.shape}")
+       #log.debug("Starting correlation computation...")
+       #log.debug(f"sat_matrix shape: {sat_matrix.shape}")
+       #log.debug(f"grd_matrix shape: {grd_matrix.shape}")
 
         n = g_w - 1
-
-        def inner_warp_pad_columns(x, n):
-            out = torch.concat([x, x[:, :, :n, :]], dim=2)
-            return out
 
         #x = inner_warp_pad_columns(sat_matrix, n)
         #x = self.warp_pad_columns(sat_matrix, n)
         
         sat_padded = torch.concat([sat_matrix, sat_matrix[:,:, :n,:]], dim=2)
-        #log.debug(f"Padded satellite matrix dimension: {sat_padded.shape}")
-        filters = grd_matrix
-        filters = filters.to(sat_matrix)
+       #log.debug(f"Padded satellite matrix dimension: {sat_padded.shape}")
+        
+        x_nchw = sat_padded.permute(0,3,1,2).contiguous()
+       #log.debug(f"x_nchw input dimension: {x_nchw.shape}")
+        
+        w_oihw = grd_matrix.permute(0,3,1,2).contiguous()
+       #log.debug(f"w_oihw input dimension: {w_oihw.shape}")
+        
+        #filters = grd_matrix
+        #filters = filters.to(sat_matrix)
 
-        out = torch.conv2d(sat_padded,filters,groups=1)
-        #log.debug(f"torch.conv2d returned object 'out' dimensions before squeeze and permutation: {out.shape}")
-        out = out.squeeze(3).permute(0,2,1)     # [B_sat, W, B_grd]  (come TF)
-        #log.debug(f"torch.conv2d out dimensions after squeeze and permutation: {out.shape}")
+        #out = torch.conv2d(sat_padded,filters,groups=1)
+        #out = nn.Conv2d(sat_padded,filters,stride=(1,1,1,1),padding='valid')
+        out = F.conv2d(x_nchw,w_oihw,bias=None,stride=1,padding=0)
+       #log.debug(f"torch.nn.functional.conv2d returned object 'out' dimensions before squeeze and permutation: {out.shape}")
+        
+        #out = out.squeeze(3).permute(0,2,1)     # [B_sat, W, B_grd]  (come TF)
+        out = out.squeeze(2).permute(0,2,1)
+       #log.debug(f"torch.nn.functional.conv2d out dimensions after squeeze and permutation: {out.shape}")
         orien = out.argmax(dim=1)               # [B_sat, B_grd]
-        #log.debug(f"torch.conv2d orien dimensions after argmax on axis 1 of out: {orien.shape}")
+       #log.debug(f"torch.nn.functional.conv2d orien dimensions after argmax on axis 1 of out: {orien.shape}")
         return out, orien
 
         correlations = []
@@ -158,8 +207,29 @@ class ProcessFeatures(nn.Module):
         sat = sat.permute(0,1,3,2,4).contiguous()                                               # [B_sat,B_grd,W,H,C]
         #log.debug(f"sat_matrix shape after permute too: {sat.shape} ")
         
-        orien = (orien.to(device=device, dtype=torch.long)% w)
+        orien = (orien.to(device=device, dtype=torch.long)% w).unsqueeze(-1)
         
+        i = torch.arange(batch_sat,device=device)
+        j = torch.arange(batch_grd,device=device)
+        k = torch.arange(w,device=device)
+        
+        x, y, z = torch.meshgrid(i, j, k, indexing='ij')
+        z_index = (z + orien) % w 
+        
+        x1 = x.reshape(-1)
+        y1 = y.reshape(-1)
+        z1 = z_index.reshape(-1)
+
+        sat_gather = sat[x1,y1,z1]
+        sat = sat_gather.view(batch_sat,batch_grd,w,h,channel)
+        
+        index1 = torch.arange(grd_width,device=device)
+        
+        sat_crop_matrix = sat.permute(2,0,1,3,4)[index1].permute(1,2,3,0,4).contiguous()
+        
+        assert sat_crop_matrix.size()[3] == grd_width
+        return sat_crop_matrix 
+                        
         k   = torch.arange(w, device=device)                                    # [W]
         #log.debug(f"k[None, None, :, None, None] dimensions: {k[None, None, :, None, None].shape}")
         orien_exp = orien.to(device=device,dtype=torch.long).view(B,batch_grd,1,1,1)
@@ -212,9 +282,7 @@ def compute_top1_accuracy(distance_matrix):
     accuracy = correct / distance_matrix.shape[0]
     return accuracy
 
-def compute_triplet_loss(distance, loss_weight=10.0):
-    batch_size = distance.shape[0]
-
+def compute_triplet_loss(distance, batch_size, loss_weight):
     # Estrai la diagonale (distanze positive)
     pos_dist = torch.diag(distance)
 
@@ -222,14 +290,62 @@ def compute_triplet_loss(distance, loss_weight=10.0):
 
     # satellite to ground
     triplet_dist_g2s = pos_dist.unsqueeze(1) - distance
+    #triplet_dist_g2s = pos_dist - distance
     loss_g2s = torch.sum(torch.log(1 + torch.exp(triplet_dist_g2s * loss_weight))) / pair_n
 
     # ground to satellite
     triplet_dist_s2g = pos_dist.unsqueeze(0) - distance
+    #triplet_dist_s2g = pos_dist.unsqueeze(1) - distance
     loss_s2g = torch.sum(torch.log(1 + torch.exp(triplet_dist_s2g * loss_weight))) / pair_n
 
     loss = (loss_g2s + loss_s2g) / 2.0
     return loss
+
+class Conv2dSameTF(nn.Module):
+    """
+    Conv2d che replica il padding='SAME' di TensorFlow (NHWC) in PyTorch (NCHW),
+    anche quando stride > 1. Esegue padding dinamico e poi conv con padding=0.
+    """
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1,
+                 dilation=1, groups=1, bias=True):
+        super().__init__()
+        self.kernel_size = _pair(kernel_size)
+        self.stride = _pair(stride)
+        self.dilation = _pair(dilation)
+        self.groups = groups
+        self.conv = nn.Conv2d(in_channels, out_channels,
+                              kernel_size=self.kernel_size,
+                              stride=self.stride,
+                              padding=0,                 # niente padding fisso
+                              dilation=self.dilation,
+                              groups=self.groups,
+                              bias=bias)
+
+    def forward(self, x):
+        ih, iw = x.shape[-2:]
+        kh, kw = self.kernel_size
+        sh, sw = self.stride
+        dh, dw = self.dilation
+
+        # kernel "effettivo" con la dilatazione
+        eff_kh = (kh - 1) * dh + 1
+        eff_kw = (kw - 1) * dw + 1
+
+        oh = math.ceil(ih / sh)
+        ow = math.ceil(iw / sw)
+
+        pad_h = max((oh - 1) * sh + eff_kh - ih, 0)
+        pad_w = max((ow - 1) * sw + eff_kw - iw, 0)
+
+        # TensorFlow distribuisce: top=floor, bottom=ceil (idem a sinistra/destra)
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+
+        if pad_h or pad_w:
+            x = F.pad(x, (pad_left, pad_right, pad_top, pad_bottom))
+        return self.conv(x)
 
 class VGGGroundBranch(nn.Module):
     """
@@ -249,10 +365,22 @@ class VGGGroundBranch(nn.Module):
         # Dropout layers for regularization
         self.dropout = nn.Dropout(config["dropout_ratio"])
         # Additional convolutional layers
-        self.conv_extra1 = nn.Conv2d(images_params["max_width"], int(images_params["max_width"]/2), kernel_size=3, stride=(2, 1), padding=(1,1))
-        self.conv_extra2 = nn.Conv2d(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1), padding=(1,1))
-        self.conv_extra3 = nn.Conv2d(int(images_params["max_width"]/8), int(images_params["max_width"]/32), kernel_size=3, stride=(1, 1), padding="same")
+        # self.conv_extra1 = nn.Conv2d(images_params["max_width"], int(images_params["max_width"]/2), kernel_size=3, stride=(2, 1), padding="same")
+        # self.conv_extra2 = nn.Conv2d(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1), padding="same")
+        # self.conv_extra3 = nn.Conv2d(int(images_params["max_width"]/8), int(images_params["max_width"]/32), kernel_size=3, stride=(1, 1), padding="same")
+        
+        self.conv_extra1 = Conv2dSameTF(images_params["max_width"], int(images_params["max_width"]/2), kernel_size=3, stride=(2, 1),bias=True)
+        self.conv_extra2 = Conv2dSameTF(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1),bias=True)
+        self.conv_extra3 = Conv2dSameTF(int(images_params["max_width"]/8), int(images_params["max_width"]/32), kernel_size=3, stride=(1, 1),bias=True)
+        
         self.relu = nn.ReLU(inplace=True)
+        
+        self.target_layer_name = gradcam_config["target_layer"]
+        self.target_acts=None
+        target_layer = dict([*self.named_modules()])[self.target_layer_name]     
+        def _save_acts(module,inp,out):
+            self.target_acts=out
+        target_layer.register_forward_hook(_save_acts)
 
     def forward(self, x):
         #log.debug("Forward pass through VGGGroundBranch...")
@@ -311,6 +439,13 @@ class VGGSatelliteBranch(nn.Module):
         self.conv_extra2 = nn.Conv2d(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1), padding="valid")
         self.conv_extra3 = nn.Conv2d(int(images_params["max_width"]/8), int(images_params["max_width"]/64), kernel_size=3, stride=(1, 1), padding="valid")
         self.relu = nn.ReLU(inplace=True)
+        
+        self.target_layer_name = gradcam_config["target_layer"]
+        self.target_acts=None
+        target_layer = dict([*self.named_modules()])[self.target_layer_name]
+        def _save_acts(module,inp,out):
+            self.target_acts=out
+        target_layer.register_forward_hook(_save_acts)
 
     def warp_pad_columns(self, x, n=1):
         """
@@ -375,15 +510,18 @@ class GroundToAerialMatchingModel(nn.Module):
         # Feature processor
         self.processor = ProcessFeatures()
 
-    def forward(self, ground_img, polar_sat_img, segmap_img):
+    def forward(self, ground_img, polar_sat_img, segmap_img,return_target_acts=False):
         # Extract features from each branch
         #log.debug("Forward pass through GroundToAerialMatchingModel...")
         #log.debug(f"Ground image shape: {ground_img.shape}")
         grd_features = self.ground_branch(ground_img)
+        #log.debug(f"Ground features values : {grd_features[0,0,0,:5]}")
         #log.debug(f"Satellite image shape: {polar_sat_img.shape}")
         sat_features = self.satellite_branch(polar_sat_img)
+        #log.debug(f"Satellite features values: {sat_features[0,0,0,:5]}")
         #log.debug(f"Segmentation map shape: {segmap_img.shape}")
         segmap_features = self.segmap_branch(segmap_img)
+        #log.debug(f"Segmentation map features values: {segmap_features[0,0,0,:5]}")
 
         # L2 normalize ground features
         norm = torch.norm(grd_features, p=2, dim=[1, 2, 3], keepdim=True)
@@ -393,9 +531,22 @@ class GroundToAerialMatchingModel(nn.Module):
         sat_combined = torch.concat([sat_features, segmap_features], dim=3)
 
         # Process features to compute correlation and distance
+        #log.debug("Processing features to compute correlation and distance...")
+        #Valori in input a VGG13
+        #log.debug(f"sat_combined values: {sat_combined[0,0,0,:5]}")
+        #log.debug(f"grd_features values: {grd_features[0,0,0,:5]}")
         sat_matrix, grd_matrix, distance, pred_orien = self.processor.VGG_13_conv_v2_cir(
             sat_combined, grd_features
         )
+        #log.debug("Output values after processing features:")
+        #log.debug(f"sat_matrix values: {sat_matrix[0,0,0,:5]}")
+        #log.debug(f"grd_matrix values: {grd_matrix[0,0,0,:5]}")
+        
+        if return_target_acts:
+            grd_acts=self.ground_branch.target_acts
+            sat_acts=self.satellite_branch.target_acts
+            return sat_matrix, grd_matrix, distance, pred_orien, grd_acts, sat_acts
+        
         #log.debug(f"Final pred sat_matrix shape: {sat_matrix.shape}")
         #log.debug(f"Final pred grd_matrix shape: {grd_matrix.shape}")
         #log.debug(f"Final pred distance shape: {distance.shape}")

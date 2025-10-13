@@ -12,16 +12,19 @@ torch.backends.cudnn.enabled = False
 torch.backends.cudnn.benchmark = False
 from tqdm import tqdm
 from Data import InputData
-from Globals import folders_and_files, config, images_params
-from Network import GroundToAerialMatchingModel
+from Globals import folders_and_files, config, images_params, experiments_config,gradcam_config,BLOCKING_COUNTER
+from Network import GroundToAerialMatchingModel,GradCAM,compute_saliency_loss,gradcam_from_activations,saliency_variability_loss
 from Train import validate_original
 import shutil
+from Utils import get_header_title
+from insertion_deletion_eval import insertion_test,deletion_test,plot_insertion_deletion_curves
+
 
 EXPERIMENTS = {
     "BASE": {"use_attention": False, "remove_sky": False},
-    "ATTENTION": {"use_attention": True, "remove_sky": False},
-    "SKYREMOVAL": {"use_attention": False, "remove_sky": True},
-    "FULL": {"use_attention": True, "remove_sky": True},
+    #"ATTENTION": {"use_attention": True, "remove_sky": False},
+    #"SKYREMOVAL": {"use_attention": False, "remove_sky": True},
+    #"FULL": {"use_attention": True, "remove_sky": True},
 }
 
 from logger import log
@@ -61,10 +64,10 @@ def plot_cmc_curve(save_path,cmc_dict: dict[str, np.ndarray]):
 
 def compute_cmc(dist_array: np.ndarray, max_rank: int = 50) -> np.ndarray:
     n = dist_array.shape[0]
-    ranks = np.sum(dist_array < np.diag(dist_array)[:, None], axis=1)
-    cmc = np.zeros(max_rank)
-    for r in range(max_rank):
-        cmc[r] = np.mean(ranks <= r)
+    max_rank = int(np.clip(max_rank, 1, n))
+    gt = np.diag(dist_array)
+    ranks = (dist_array < gt[:, None]).sum(axis=1)  # zero-based rank
+    cmc = np.array([np.mean(ranks <= r) for r in range(max_rank)], dtype=float)
     return cmc
 
 def plot_top5_matches(save_path, data: InputData, dist_array: np.ndarray, num_examples: int = 5):
@@ -150,51 +153,62 @@ def find_checkpoints(root: str) -> List[str]:
     """Return latest `model.pth` in every experiment sub‑folder."""
     checkpoints = []
     for exp_dir in sorted(os.listdir(root)):
-        log.info(f"Checking experiment folder: {exp_dir}...")
-        exp_path = os.path.join(root, exp_dir)
-        if not os.path.isdir(exp_path):
-            log.info(f"Skipping non-directory: {exp_path}")
-            continue
-        # look for epoch*.pth files
-        log.info(f"Searching for checkpoints in: {exp_path}")
-        epochs = sorted(
-            glob.glob(os.path.join(exp_path, "epoch*/model.pth")),
-            key=lambda p: int(os.path.basename(os.path.dirname(p))[5:]),
-        )
-        log.info(f"Found {len(epochs)} checkpoints in {exp_path}")
-        if epochs:
-            checkpoints.append(epochs[-1])  # latest epoch
+        if(exp_dir in EXPERIMENTS.keys()):
+            log.info(f"Checking experiment folder: {exp_dir}...")
+            exp_path = os.path.join(root, exp_dir)
+            if not os.path.isdir(exp_path):
+                log.info(f"Skipping non-directory: {exp_path}")
+                continue
+            # look for epoch*.pth files
+            log.info(f"Searching for checkpoints in: {exp_path}")
+            epochs = sorted(
+                glob.glob(os.path.join(exp_path, "epoch*/model.pth")),
+                key=lambda p: int(os.path.basename(os.path.dirname(p))[5:]),
+            )
+            log.info(f"Found {len(epochs)} checkpoints in {exp_path}")
+            if epochs:
+                checkpoints.append(epochs[-1])  # latest epoch
+        else:
+            log.info(f"Experiment folder: {exp_dir} not in dictionary of possible experiments...")
     return checkpoints
 
-def evaluate_checkpoint(ckpt_path: str, batch_size: int = config["batch_size"], grd_FOV: int = 360, grd_noise: int = 0):
+def evaluate_checkpoint(ckpt_path, batch_size, grd_FOV, grd_noise, run_insertion_deletion=True):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"Loading checkpoint: {ckpt_path}")
     model = GroundToAerialMatchingModel().to(device)
     checkpoint = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
     log.info("Model loaded:")
     log.info(f"Model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
     log.info(f"Model loss vaulue: {checkpoint.get('loss', 'N/A')}")
     log.info(f"Model epoch: {checkpoint.get('epoch', 'N/A')}")
     
-    # Dataset
-    data = InputData()
-    n_samples = data.get_test_dataset_size()
-    log.info(f"Dataset size: {n_samples} test samples")
-    
-    pbar = tqdm(total=n_samples, ncols=80, desc="Inferencing", unit="img")
-    
-    eval_batch_losses = []
     name = os.path.basename(os.path.dirname(os.path.dirname(ckpt_path)))
-
+    
+    experiments_config["name"] = name
+    experiments_config["use_attention"] = EXPERIMENTS[name]["use_attention"]
+    experiments_config["remove_sky"] = EXPERIMENTS[name]["remove_sky"]
+    
     # Logs folder
     local_logs_folder = os.path.join(folders_and_files["log_folder"],"EVALUATION",""f"{name}")
+    eval_loss_path = os.path.join(local_logs_folder, f"{name}_eval_losses.npy")
+    local_plots_folder = os.path.join(folders_and_files["log_folder"],"EVALUATION",""f"{name}")
+    
+    shutil.rmtree(local_logs_folder,ignore_errors=True)
     os.makedirs(local_logs_folder,exist_ok=True)
     
-    eval_loss_path = os.path.join(local_logs_folder, f"{name}_eval_losses.npy")
-
-    counter = 0
+    shutil.rmtree(local_plots_folder,ignore_errors=True)
+    os.makedirs(local_plots_folder,exist_ok=True)
+    
+    experiments_config["logs_folder"] = local_logs_folder
+    experiments_config["plots_folder"] = local_plots_folder
+    
+    # Dataset
+    log.info(get_header_title("LOADING DATASET"))
+    data = InputData()
+    n_test_samples = data.get_test_dataset_size()
+    log.info(f"Dataset size: {n_test_samples} test samples")
+    log.info(get_header_title("END",new_line=True))
     
     train_grd_FOV = config["train_grd_FOV"]
     max_angle = images_params["max_angle"]
@@ -215,22 +229,25 @@ def evaluate_checkpoint(ckpt_path: str, batch_size: int = config["batch_size"], 
     orientation_gth = np.zeros([data.get_test_dataset_size()])
     
     val_i=0
+    eval_batch_losses = []
+    counter = 0
+    data.__cur_id = 0
     
-    epoch_r1 = []
-    epoch_r5 = []
-    epoch_r10 = []
-    epoch_top1_percent_recall = []
+    model.eval()
     
-    iter_recalls_r1 = []
-    iter_recalls_r5 = []
-    iter_recalls_r10 = []
-    iter_top1_percent_recall = []
+    log.info(f"Started Evaluation...")
         
     while True:
-        log.info(f"ITERATION {counter + 1}/{int(n_samples/batch_size)}...")
-        batch_sat_polar, _, batch_grd, batch_segmap, batch_orien = data.next_batch_scan(batch_size, grd_noise=grd_noise, FOV=grd_FOV)
         
-        if batch_sat_polar is None:
+        if(counter+1==BLOCKING_COUNTER):
+            log.info("Breaking...")
+            break
+        
+        log.info(f"Batch: {counter+1}/{int(n_test_samples/batch_size)}")
+        batch_sat_polar, batch_sat, batch_grd, batch_segmap, batch_orien = data.next_batch_scan(batch_size, grd_noise=grd_noise, FOV=grd_FOV)
+        
+        if batch_sat is None:
+            log.info("Breaking because there is no more data...")
             break
         
         grd = torch.from_numpy(batch_grd).float().to(device)
@@ -238,59 +255,23 @@ def evaluate_checkpoint(ckpt_path: str, batch_size: int = config["batch_size"], 
         seg = torch.from_numpy(batch_segmap).float().to(device)
         
         with torch.no_grad():
+            log.info(f"Inferencing...")
             sat_mat, grd_mat, distance, _ = model(grd, sat_polar, seg)
-            loss_value = compute_triplet_loss(distance,loss_weight=config["loss_weight"]).item()
-            
-            g_height, g_width, g_channel = list(grd_mat.size())[1:]
-            grd_batch_matrix = np.zeros([batch_size, g_height, g_width, g_channel])
-            grd_batch_matrix[0:grd_mat.shape[0],:]=grd_mat.cpu().detach().numpy()
-            grd_batch_descriptor = np.reshape(grd_batch_matrix,[-1,g_height*g_width*g_channel])
-            data_batch_amount = grd_batch_descriptor.shape[0]
-            top1_percent_batch_value = int(data_batch_amount*0.01)+1
-            
-            val_batch_accuracy = validate_original(distance.cpu().detach().numpy(),1)*100 
-            r5_batch = validate_original(distance.cpu().detach().numpy(),5)*100
-            r10_batch = validate_original(distance.cpu().detach().numpy(),10)*100
-            r1p_batch = validate_original(distance.cpu().detach().numpy(),top1_percent_batch_value)*100
-            
-            iter_recalls_r1.append(val_batch_accuracy)
-            iter_recalls_r5.append(r5_batch)
-            iter_recalls_r10.append(r10_batch)
-            iter_top1_percent_recall.append(r1p_batch)
-            
-            log.info(f"EVALUATION (DISTANCE), R@1: {val_batch_accuracy:.2f}%, R@5: {r5_batch:.2f}%, R@10: {r10_batch:.2f}%, R@1%: {r1p_batch:.2f}% with Samples 1%: {top1_percent_batch_value}\n") 
+            loss_value = compute_triplet_loss(distance,batch_size,loss_weight=config["loss_weight"])
+            total_loss_batch = loss_value
+            batch_loss = total_loss_batch.item()    
         
+        log.info("Updating matrix for descriptors...")    
         sat_global_matrix[val_i:val_i+sat_mat.shape[0],:]=sat_mat.cpu().detach().numpy()
         grd_global_matrix[val_i:val_i+grd_mat.shape[0],:]=grd_mat.cpu().detach().numpy()
         orientation_gth[val_i:val_i+grd_mat.shape[0]]=batch_orien
         
-        eval_batch_losses.append(loss_value)
-        
-        #if(counter+1 <= 5):
-        #    log.info(f"Batch {counter + 1} - Loss: {loss_value:.4f}")
-        #    log.info("grd_mat shape: %s, sat_mat shape: %s", grd_mat.shape, sat_mat.shape)
-        #    log.info("flattened grd_mat shape: %s, flattened sat_mat shape: %s", flatten_descriptor(grd_mat).cpu().shape, flatten_descriptor(sat_mat).cpu().shape)
-            
-        # grd_feats.append(flatten_descriptor(grd_mat).cpu())   # [B, D]
-        # sat_feats.append(flatten_descriptor(sat_mat).cpu())   # [B, D]
-
-        # pbar.update(grd_mat.shape[0])
-        
+        eval_batch_losses.append(batch_loss)
+        val_i += sat_mat.shape[0]
         counter += 1
-        val_i += sat_matrix.shape[0]
+    
+    log.info(f"Evaluation terminated, calculating metrics...")
         
-    pbar.close()
-    
-    epoch_r1.append(iter_recalls_r1)
-    epoch_r5.append(iter_recalls_r5)
-    epoch_r10.append(iter_recalls_r10)
-    epoch_top1_percent_recall.append(iter_top1_percent_recall)
-    
-    np.save(os.path.join(local_logs_folder, "epoch_r1.npy"), np.array(epoch_r1, dtype=object))
-    np.save(os.path.join(local_logs_folder, "epoch_r5.npy"), np.array(epoch_r5, dtype=object))
-    np.save(os.path.join(local_logs_folder, "epoch_r10.npy"), np.array(epoch_r10, dtype=object))
-    np.save(os.path.join(local_logs_folder, "epoch_top1_percent_recall.npy"), np.array(epoch_top1_percent_recall, dtype=object))
-    
     sat_descriptor = np.reshape(sat_global_matrix[:,:,:g_width,:],[-1,g_height*g_width*g_channel])
     norm = np.linalg.norm(sat_descriptor, axis=-1, keepdims=True)
     sat_descriptor = sat_descriptor / np.maximum(norm,1e-12)
@@ -300,54 +281,18 @@ def evaluate_checkpoint(ckpt_path: str, batch_size: int = config["batch_size"], 
     top1_percent_value = int(data_amount*0.01)+1
     dist_array = 2.0-2.0*np.matmul(grd_descriptor,np.transpose(sat_descriptor))
     
-    val_accuracy = validate_original(dist_array,1)*100 
-    r5_epoch = validate_original(dist_array,5)*100
-    r10_epoch = validate_original(dist_array,10)*100
-    r1p_epoch = validate_original(dist_array,top1_percent_value)*100
+    val_accuracy = validate_original(dist_array,1)*100.0 
+    r5_epoch = validate_original(dist_array,5)*100.0
+    r10_epoch = validate_original(dist_array,10)*100.0
+    r1p_epoch = validate_original(dist_array,top1_percent_value)*100.0
     
     log.info(f"FINAL LOG - EVALUATION, SAMPLES 1%: {top1_percent_value}, R@1: {val_accuracy:.2f}%, R@5: {r5_epoch:.2f}%, R@10: {r10_epoch:.2f}%, R@1%: {r1p_epoch:.2f}%")
     
-    #grd_descriptor = torch.concat(grd_feats, dim=0)      # [N, D]
-    #sat_descriptor = torch.concat(sat_feats, dim=0)      # [N, D]
-    #assert grd_descriptor.shape == sat_descriptor.shape, "Ground-Sat Evaluation Shape mismatch"
-    
-    # dist_train_like   = _distance_dot(grd_descriptor, sat_descriptor) 
-    # dist_cosine       = _distance_cosine(grd_descriptor, sat_descriptor)
-    # dist_scalar_scale = _distance_scalar_scaled(grd_descriptor, sat_descriptor)
-    
-    # dist_train_like_np   = dist_train_like.cpu().numpy() 
-    # dist_cosine_np       = dist_cosine.cpu().numpy() 
-    # dist_scalar_scale_np = dist_scalar_scale.cpu().numpy() 
-    
-    # for name, dist in {
-    #     "train-like": dist_train_like,
-    #     "cosine"    : dist_cosine,
-    #     "scaled"    : dist_scalar_scale,
-    # }.items():
-
-    #     r1  = recall_at_k(dist, 1) * 100
-    #     r5  = recall_at_k(dist, 5) * 100
-    #     r10 = recall_at_k(dist,10) * 100
-    #     r1p = top1_percent_recall(dist.numpy()) * 100   # se vuoi riusare la tua
-    #     log.info(f"[{name}]: Top-1 recall: {r1:5.2f}  Top-5 recall {r5:5.2f}  Top-10 recall {r10:5.2f}  Top-1% recall {r1p:5.2f}")
-    
-    
-    #out_mat = os.path.join(os.path.dirname(ckpt_path), "descriptors.mat")
-    # scio.savemat(
-    #     out_mat,
-    #     {
-    #         "grd_descriptor": grd_descriptor,
-    #         "sat_descriptor": sat_descriptor,
-    #         "dist_array": dist_array,
-    #         "top1": top1,
-    #         "top1_percent": top1p,
-    #     },
-    # )
-    # log.info(f"Saved descriptors & metrics in {out_mat}")
+    log.info("Saving evaluation losses...\n")
+    np.save(eval_loss_path, np.array(eval_batch_losses))
     
     checkpoint_experiment_name = os.path.basename(os.path.dirname(os.path.dirname(ckpt_path)))
-    
-    cmc = compute_cmc(dist_array)
+    cmc_dist_array = compute_cmc(dist_array)
     
     # Plot top-5 matches
     num_examples_plot=5
@@ -355,10 +300,52 @@ def evaluate_checkpoint(ckpt_path: str, batch_size: int = config["batch_size"], 
     log.info(f"Plotting top-{num_examples_plot} matches to {save_path}...")   
     plot_top5_matches(save_path,data,dist_array,num_examples_plot)
     
-    log.info("Saving evaluation losses...\n")
-    np.save(eval_loss_path, np.array(eval_batch_losses))
+    # Run insertion and deletion tests if requested
     
-    return cmc
+    insertion_deletion_results = {}
+    
+    if run_insertion_deletion:
+        log.info(get_header_title("INSERTION AND DELETION TESTS",new_line=True))
+        
+        log.info(get_header_title("DELETION TEST",new_line=True))
+        deletion_save_path = os.path.join(local_logs_folder, f"{name}_deletion_results.npy")
+        deletion_results= deletion_test(
+            model=model,
+            data=data,
+            device=device,
+            batch_size=batch_size,
+            grd_FOV=grd_FOV,
+            grd_noise=grd_noise,
+            num_steps=100,  # 100 steps for 1% increments
+            save_path=deletion_save_path
+        )
+        insertion_deletion_results['deletion'] = deletion_results
+        
+        log.info(get_header_title("INSERTION TEST",new_line=True))
+        insertion_save_path = os.path.join(local_logs_folder, f"{name}_insertion_results.npy")
+        insertion_results = insertion_test(
+            model=model,
+            data=data,
+            device=device,
+            batch_size=batch_size,
+            grd_FOV=grd_FOV,
+            grd_noise=grd_noise,
+            num_steps=100,  # 100 steps for 1% increments
+            save_path=insertion_save_path
+        )
+        insertion_deletion_results['insertion'] = insertion_results
+        
+        log.info(get_header_title("END INSERTION AND DELETION TESTS", new_line=True))
+        
+        log.info(get_header_title("SAVING INSERTIOON AND DELETION CURVES"))
+        # Plot individual experiment curves
+        individual_plot_path = os.path.join(local_plots_folder, f"{name}_insertion_deletion_curves.png")
+        plot_insertion_deletion_curves(
+            {name: insertion_deletion_results},
+            individual_plot_path
+        )
+        
+    return cmc_dist_array,insertion_deletion_results
     
 def main():
     parser = argparse.ArgumentParser(description="Evaluation for Ground-Aerial matching model")
@@ -366,6 +353,7 @@ def main():
     parser.add_argument("--batch_size", type=int, default=config["batch_size"], help="Batch size for inference")
     parser.add_argument("--grd_FOV", type=int, default=config["test_grd_FOV"] or 360)
     parser.add_argument("--grd_noise", type=int, default=0)
+    parser.add_argument("--skip_insertion_deletion", action="store_true", help="Skip insertion/deletion tests", default=False)
     args = parser.parse_args()    
     
     EXPERIMENT_NAMES = list(EXPERIMENTS.keys())
@@ -386,19 +374,41 @@ def main():
         log.info(f"checkpoint-{counter}: {c}")
         counter += 1
     
-    all_cmc = {}
+    all_cmc_dist_array = {}
+    all_insertion_deletion_results={}
     
     for ckpt in checkpoints:
-        cmc = evaluate_checkpoint(
+        cmc_dist_array,insertion_deletion_results = evaluate_checkpoint(
             ckpt,
             batch_size=args.batch_size,
             grd_FOV=args.grd_FOV,
             grd_noise=args.grd_noise,
+            run_insertion_deletion=not args.skip_insertion_deletion
         )
         checkpoint_experiment_name = os.path.basename(os.path.dirname(os.path.dirname(ckpt)))
-        all_cmc[checkpoint_experiment_name] = cmc
+        all_cmc_dist_array[checkpoint_experiment_name] = cmc_dist_array
+
+        if insertion_deletion_results:
+            all_insertion_deletion_results[checkpoint_experiment_name]=insertion_deletion_results
+        
+    plot_cmc_curve(os.path.join(folders_and_files["plots_folder"],"ALL_experiments_cmc_curve_dist_array.png"),all_cmc_dist_array)
     
-    plot_cmc_curve(os.path.join(folders_and_files["plots_folder"],"ALL_experiments_cmc_curve.png"),all_cmc)
+    if all_insertion_deletion_results:
+        combined_plot_path = os.path.join(
+            folders_and_files["plots_folder"],
+            "ALL_experiments_insertion_deletion_curves.png"
+        )
+        plot_insertion_deletion_curves(all_insertion_deletion_results, combined_plot_path)
+        
+        # Summary log
+        log.info(get_header_title("INSERTION/DELETION SUMMARY"))
+        for exp_name, results in all_insertion_deletion_results.items():
+            log.info(f"\n{exp_name}:")
+            if 'deletion' in results:
+                log.info(f"  Deletion AUC: {results['deletion']['auc']:.4f}")
+            if 'insertion' in results:
+                log.info(f"  Insertion AUC: {results['insertion']['auc']:.4f}")
+        log.info(get_header_title("END", new_line=True))
     
 if __name__ == "__main__":
     main()    

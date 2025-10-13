@@ -44,7 +44,6 @@ def main():
                 log.info(get_header_title(f"Running experiment: {name}"))
                 train_model(name, config_overrides)
                 log.info(get_header_title(f"Experiment {name} completed", new_line=True))
-            create_comparison_plots()
         else:
             train_model("FULL", EXPERIMENTS["FULL"])
 

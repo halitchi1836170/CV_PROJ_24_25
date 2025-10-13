@@ -27,7 +27,7 @@ _cfg.MODEL.MASK_FORMER.TEST.PANOPTIC_ON = True
 _predictor = DefaultPredictor(_cfg)
 
 
-def remove_sky_from_image(image: np.ndarray) -> np.ndarray:
+def remove_sky_from_image(image: np.ndarray,index_for_save) -> np.ndarray:
     """
     Rimuove il cielo da un'immagine sostituendolo con pixel 0
     """
@@ -52,9 +52,9 @@ def remove_sky_from_image(image: np.ndarray) -> np.ndarray:
     im_no_sky = img_input.copy()
     im_no_sky[sky_mask.cpu().numpy()] = 0  # imposta a nero
     
-    if experiments_config["save_ground_wo_sky"] and experiments_config["flag_save_ground_wo_sky"]:
-        log.info("Saving ground image without sky for debug...")
-        cv2.imwrite(f"{experiments_config['plots_folder']}/ground_wo_sky_epoch_{experiments_config['epoch_for_save']}.jpg", im_no_sky)
+    if experiments_config["flag_save_ground_wo_sky"]:
+        log.debug("Saving ground image without sky...")
+        cv2.imwrite(f"{experiments_config['plots_folder']}/ground_wo_sky_epoch_{experiments_config['epoch_for_save']}{index_for_save}.jpg", im_no_sky)
         experiments_config["flag_save_ground_wo_sky"] = False
     
     return im_no_sky
