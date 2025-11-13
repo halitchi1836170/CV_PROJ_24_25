@@ -3,16 +3,13 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from typing import Tuple, Dict
-from Globals import BLOCKING_COUNTER
+from Globals import BLOCKING_COUNTER, GROUND_MEAN, GROUND_STD
 from logger import log
 from tqdm import tqdm
 from Train import validate_original
-from Network import gradcam_from_activations
+from Network import HookManager, compute_gradcam_from_acts_grads, gradcam_from_activations, gradcam_config
 from Globals import config, images_params
 import matplotlib.pyplot as plt
-
-GROUND_MEAN = np.array([0.46, 0.48, 0.47])
-GROUND_STD = np.array([0.24, 0.20, 0.21])
 
 def compute_gradcam(model, grd_img, polar_sat_img, segmap_img, device):
     """
@@ -128,7 +125,6 @@ def deletion_test(
         results: dict with 'accuracies', 'auc', 'percentages'
     """
     log.info("Starting DELETION test...")
-    model.eval()
     
     images_dir = None
     if save_path:
@@ -139,29 +135,30 @@ def deletion_test(
     percentages = np.linspace(0, 1, num_steps + 1)  # 0%, 1%, 2%, ..., 100%
     accuracies = []
     
+    # Setup per le matrici globali
+    n_test_samples = data.get_test_dataset_size()
+    train_grd_FOV = config["train_grd_FOV"]
+    max_angle = images_params["max_angle"]
+    max_width = images_params["max_width"]
+    width = int(train_grd_FOV / max_angle * max_width)
+    
+    # Dummy forward per ottenere le dimensioni
+    grd_x = torch.zeros([2, int(max_width/4), width, 3]).to(device)
+    polar_sat_x = torch.zeros([2, int(max_width/4), max_width, 3]).to(device)
+    segmap_x = torch.zeros([2, int(max_width/4), max_width, 3]).to(device)
+    
+    with torch.no_grad():
+        sat_matrix, grd_matrix, _, _ = model(grd_x, polar_sat_x, segmap_x)
+    
+    s_height, s_width, s_channel = list(sat_matrix.size())[1:]
+    g_height, g_width, g_channel = list(grd_matrix.size())[1:]
+    
     for step, pct in enumerate(percentages):
         log.info(f"Deletion step {step+1}/{len(percentages)}: removing {pct*100:.1f}% of pixels")
         
         data.__cur_id = 0
         val_i = 0
         counter = 0
-        
-        # Matrices for storing descriptors
-        n_test_samples = data.get_test_dataset_size()
-        
-        train_grd_FOV = config["train_grd_FOV"]
-        max_angle = images_params["max_angle"]
-        max_width = images_params["max_width"]
-        width = int(train_grd_FOV / max_angle * max_width)
-        
-        grd_x = torch.zeros([2, int(max_width/4), width,3]).to(device)                             #ORDINE CAMBIATO: B (batch size)-C (channels)-H-W
-        sat_x = torch.zeros([2, int(max_width/2), max_width,3]).to(device)
-        polar_sat_x = torch.zeros([2, int(max_width/4), max_width,3]).to(device)
-        segmap_x = torch.zeros([2, int(max_width/4), max_width,3]).to(device)
-        
-        sat_matrix, grd_matrix, distance, pred_orien = model(grd_x, polar_sat_x, segmap_x)
-        s_height, s_width, s_channel = list(sat_matrix.size())[1:]
-        g_height, g_width, g_channel = list(grd_matrix.size())[1:]
         
         sat_global_matrix = np.zeros([n_test_samples, s_height, s_width, s_channel])
         grd_global_matrix = np.zeros([n_test_samples, g_height, g_width, g_channel])
@@ -187,42 +184,59 @@ def deletion_test(
             seg = torch.from_numpy(batch_segmap).float().to(device)
             
             # Compute GradCAM
-            cam = compute_gradcam(model, grd.clone().requires_grad_(True), sat_polar, seg, device)
+            #cam = compute_gradcam(model, grd.clone().requires_grad_(True), sat_polar, seg, device)
             
+            hm_grd = HookManager(model, f"ground_branch.{gradcam_config['visualization_layer']}")
+
+            torch.set_grad_enabled(True)
+            model.eval()
+            
+            grd_for_cam = grd.clone().requires_grad_(True)
+            
+            sat_mat_cam, grd_mat_cam, distance_cam, _ = model(grd_for_cam, sat_polar, seg)
+            
+            target_scalar = distance_cam.diag().sum()
+            model.zero_grad()
+            target_scalar.backward()
+            
+            cam = compute_gradcam_from_acts_grads(hm_grd.activations, hm_grd.gradients, upsample_to=(grd.shape[1], grd.shape[2]))
+        
+            hm_grd.remove()
+            torch.set_grad_enabled(False)
+            
+            # Resize CAM to match input image size
+            cam_resized = F.interpolate(
+                cam.unsqueeze(1),
+                size=(grd.shape[1], grd.shape[2]),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(1)  # [B, H, W]
+            
+            # Create deletion mask
+            B, H, W = cam_resized.shape
+            num_pixels = H * W
+            num_to_remove = int(num_pixels * pct)
+            
+            mask = torch.ones_like(cam_resized)  # Start with all pixels
+            
+            if num_to_remove > 0:
+                for b in range(B):
+                    cam_flat = cam_resized[b].view(-1)
+                    # Get indices of top pixels to remove
+                    _, indices = torch.topk(cam_flat, num_to_remove, largest=True)
+                    mask_flat = mask[b].view(-1)
+                    mask_flat[indices] = 0
+                    mask[b] = mask_flat.view(H, W)
+            
+            # Apply mask to ground images
+            grd_masked = apply_mask_to_image(grd, mask)
+            
+            if not saved_example_for_this_step and images_dir:
+                save_example_image(grd, grd_masked, cam_resized, mask, pct, step, 
+                                    images_dir, 'deletion')
+                saved_example_for_this_step = True
+                    
             with torch.no_grad():
-                
-                # Resize CAM to match input image size
-                cam_resized = F.interpolate(
-                    cam.unsqueeze(1),
-                    size=(grd.shape[1], grd.shape[2]),
-                    mode='bilinear',
-                    align_corners=False
-                ).squeeze(1)  # [B, H, W]
-                
-                # Create deletion mask
-                B, H, W = cam_resized.shape
-                num_pixels = H * W
-                num_to_remove = int(num_pixels * pct)
-                
-                mask = torch.ones_like(cam_resized)  # Start with all pixels
-                
-                if num_to_remove > 0:
-                    for b in range(B):
-                        cam_flat = cam_resized[b].view(-1)
-                        # Get indices of top pixels to remove
-                        _, indices = torch.topk(cam_flat, num_to_remove, largest=True)
-                        mask_flat = mask[b].view(-1)
-                        mask_flat[indices] = 0
-                        mask[b] = mask_flat.view(H, W)
-                
-                # Apply mask to ground images
-                grd_masked = apply_mask_to_image(grd, mask)
-                
-                if not saved_example_for_this_step and images_dir:
-                    save_example_image(grd, grd_masked, cam_resized, mask, pct, step, 
-                                     images_dir, 'deletion')
-                    saved_example_for_this_step = True
-                
                 # Forward pass with masked images
                 sat_mat, grd_mat, distance, _ = model(grd_masked, sat_polar, seg)
             
@@ -309,29 +323,30 @@ def insertion_test(
     percentages = np.linspace(0, 1, num_steps + 1)  # 0%, 1%, 2%, ..., 100%
     accuracies = []
     
+    # Setup per le matrici globali
+    n_test_samples = data.get_test_dataset_size()
+    train_grd_FOV = config["train_grd_FOV"]
+    max_angle = images_params["max_angle"]
+    max_width = images_params["max_width"]
+    width = int(train_grd_FOV / max_angle * max_width)
+    
+    # Dummy forward per ottenere le dimensioni
+    grd_x = torch.zeros([2, int(max_width/4), width, 3]).to(device)
+    polar_sat_x = torch.zeros([2, int(max_width/4), max_width, 3]).to(device)
+    segmap_x = torch.zeros([2, int(max_width/4), max_width, 3]).to(device)
+    
+    with torch.no_grad():
+        sat_matrix, grd_matrix, _, _ = model(grd_x, polar_sat_x, segmap_x)
+    
+    s_height, s_width, s_channel = list(sat_matrix.size())[1:]
+    g_height, g_width, g_channel = list(grd_matrix.size())[1:]
+    
     for step, pct in enumerate(percentages):
         log.info(f"Insertion step {step+1}/{len(percentages)}: adding {pct*100:.1f}% of pixels")
         
         data.__cur_id = 0
         val_i = 0
         counter = 0
-        
-        # Matrices for storing descriptors
-        n_test_samples = data.get_test_dataset_size()
-        
-        train_grd_FOV = config["train_grd_FOV"]
-        max_angle = images_params["max_angle"]
-        max_width = images_params["max_width"]
-        width = int(train_grd_FOV / max_angle * max_width)
-        
-        grd_x = torch.zeros([2, int(max_width/4), width,3]).to(device)                             #ORDINE CAMBIATO: B (batch size)-C (channels)-H-W
-        sat_x = torch.zeros([2, int(max_width/2), max_width,3]).to(device)
-        polar_sat_x = torch.zeros([2, int(max_width/4), max_width,3]).to(device)
-        segmap_x = torch.zeros([2, int(max_width/4), max_width,3]).to(device)
-        
-        sat_matrix, grd_matrix, distance, pred_orien = model(grd_x, polar_sat_x, segmap_x)
-        s_height, s_width, s_channel = list(sat_matrix.size())[1:]
-        g_height, g_width, g_channel = list(grd_matrix.size())[1:]
         
         sat_global_matrix = np.zeros([n_test_samples, s_height, s_width, s_channel])
         grd_global_matrix = np.zeros([n_test_samples, g_height, g_width, g_channel])
@@ -356,43 +371,60 @@ def insertion_test(
             seg = torch.from_numpy(batch_segmap).float().to(device)
             
             # Compute GradCAM
-            cam = compute_gradcam(model, grd.clone().requires_grad_(True), sat_polar, seg, device)
+            #cam = compute_gradcam(model, grd.clone().requires_grad_(True), sat_polar, seg, device)
+            
+            hm_grd = HookManager(model, f"ground_branch.{gradcam_config['visualization_layer']}")
+
+            torch.set_grad_enabled(True)
+            model.eval()
+            
+            grd_for_cam = grd.clone().requires_grad_(True)
+            
+            sat_mat_cam, grd_mat_cam, distance_cam, _ = model(grd_for_cam, sat_polar, seg)
+            
+            target_scalar = distance_cam.diag().sum()
+            model.zero_grad()
+            target_scalar.backward()
+            
+            cam = compute_gradcam_from_acts_grads(hm_grd.activations, hm_grd.gradients, upsample_to=(grd.shape[1], grd.shape[2]))
+        
+            hm_grd.remove()
+            torch.set_grad_enabled(False)
+            
+            # Resize CAM to match input image size
+            cam_resized = F.interpolate(
+                cam.unsqueeze(1),
+                size=(grd.shape[1], grd.shape[2]),
+                mode='bilinear',
+                align_corners=False
+            ).squeeze(1)  # [B, H, W]
+            
+            # Create insertion mask (start from blank)
+            B, H, W = cam_resized.shape
+            num_pixels = H * W
+            num_to_add = int(num_pixels * pct)
+            
+            mask = torch.zeros_like(cam_resized)  # Start with no pixels
+            
+            if num_to_add > 0:
+                for b in range(B):
+                    cam_flat = cam_resized[b].view(-1)
+                    # Get indices of top pixels to add
+                    _, indices = torch.topk(cam_flat, num_to_add, largest=True)
+                    mask_flat = mask[b].view(-1)
+                    mask_flat[indices] = 1
+                    mask[b] = mask_flat.view(H, W)
+            
+            # Apply mask to ground images (start from blank/white)
+            # For blank image, we can use zeros or mean pixel value
+            grd_masked = apply_mask_to_image(grd, mask, background_value=1.0)
+            
+            if not saved_example_for_this_step and images_dir:
+                save_example_image(grd, grd_masked, cam_resized, mask, pct, step, 
+                                    images_dir, 'insertion')
+                saved_example_for_this_step = True
             
             with torch.no_grad():
-                
-                # Resize CAM to match input image size
-                cam_resized = F.interpolate(
-                    cam.unsqueeze(1),
-                    size=(grd.shape[1], grd.shape[2]),
-                    mode='bilinear',
-                    align_corners=False
-                ).squeeze(1)  # [B, H, W]
-                
-                # Create insertion mask (start from blank)
-                B, H, W = cam_resized.shape
-                num_pixels = H * W
-                num_to_add = int(num_pixels * pct)
-                
-                mask = torch.zeros_like(cam_resized)  # Start with no pixels
-                
-                if num_to_add > 0:
-                    for b in range(B):
-                        cam_flat = cam_resized[b].view(-1)
-                        # Get indices of top pixels to add
-                        _, indices = torch.topk(cam_flat, num_to_add, largest=True)
-                        mask_flat = mask[b].view(-1)
-                        mask_flat[indices] = 1
-                        mask[b] = mask_flat.view(H, W)
-                
-                # Apply mask to ground images (start from blank/white)
-                # For blank image, we can use zeros or mean pixel value
-                grd_masked = apply_mask_to_image(grd, mask, background_value=1.0)
-                
-                if not saved_example_for_this_step and images_dir:
-                    save_example_image(grd, grd_masked, cam_resized, mask, pct, step, 
-                                     images_dir, 'insertion')
-                    saved_example_for_this_step = True
-                
                 # Forward pass with masked images
                 sat_mat, grd_mat, distance, _ = model(grd_masked, sat_polar, seg)
             

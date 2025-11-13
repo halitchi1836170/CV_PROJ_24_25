@@ -4,8 +4,8 @@ import numpy as np
 
 config = {
     "name": "MODEL CONFIGURATION",
-    "epochs":1,
-    "learning_rate":0.0001,
+    "epochs":33,
+    "learning_rate":0.00005,
     "fin_tuning_learning_rate":0.000001,
     "batch_size":8,
     "loss_weight":10.0,
@@ -62,7 +62,8 @@ logger_config = {
 gradcam_config = {
     "use_gradcam": True,
     "lambda_saliency": 0.5,
-    "target_layer": "features.21",
+    "visualization_layer": "conv_extra3",
+    "saliency_loss_layer":"features.21",
     "apply_on": "ground",  # oppure "satellite"
     "save_plot_heatmaps": True,  # serve a salvare le heatmap ogni N iterazioni
 }
@@ -76,7 +77,7 @@ EXPERIMENTS = {
     #"ATTENTION": {"use_attention": True, "remove_sky": False},
     "BASE": {"use_attention": False, "remove_sky": False},
     #"SKYREMOVAL": {"use_attention": False, "remove_sky": True},
-    #"FULL": {"use_attention": True, "remove_sky": True},
+    "FULL": {"use_attention": True, "remove_sky": True},
 }
 
 experiments_config = {
@@ -92,3 +93,6 @@ experiments_config = {
 }
 
 BLOCKING_COUNTER=-3
+
+GROUND_MEAN = np.array([0.46, 0.48, 0.47])
+GROUND_STD = np.array([0.24, 0.20, 0.21])

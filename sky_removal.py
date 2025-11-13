@@ -23,7 +23,7 @@ _cfg.MODEL.WEIGHTS = 'https://dl.fbaipublicfiles.com/maskformer/mask2former/coco
 _cfg.MODEL.MASK_FORMER.TEST.SEMANTIC_ON = True
 _cfg.MODEL.MASK_FORMER.TEST.INSTANCE_ON = True
 _cfg.MODEL.MASK_FORMER.TEST.PANOPTIC_ON = True
-#_cfg.MODEL.DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+_cfg.MODEL.DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
 _predictor = DefaultPredictor(_cfg)
 
 

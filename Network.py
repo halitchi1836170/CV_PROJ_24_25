@@ -6,36 +6,82 @@ import torch.nn.functional as F
 from logger import log
 import math
 from torch.nn.modules.utils import _pair
+from typing import Optional, Tuple
 
-class GradCAM:
-    def __init__(self, model, target_layer_name):
-        self.model = model
-        self.target_layer = dict([*model.named_modules()])[target_layer_name]
+
+##############################################################################################################################################
+# ============================================ OLD GradCAM (temporarily disabled) ============================================================
+# class GradCAM:
+#     def __init__(self, model, target_layer_name):
+#         self.model = model
+#         self.target_layer = dict([*model.named_modules()])[target_layer_name]
+#         self.activations = None
+#         self.gradients = None
+
+#         self.target_layer.register_forward_hook(self.forward_hook)
+#         self.target_layer.register_full_backward_hook(self.backward_hook)
+
+#     def forward_hook(self, module, input, output):
+#         self.activations = output
+
+#     def backward_hook(self, module, grad_input, grad_output):
+#         self.gradients = grad_output[0]
+
+#     def generate(self, target_size):
+#         w = self.gradients.mean(dim=(2,3), keepdim=True)             # [B,C,1,1]
+#         cam = (w * self.activations).sum(dim=1, keepdim=True).relu() # [B,1,H,W]
+#         cam = F.interpolate(cam, size=target_size, mode='bilinear', align_corners=False)
+#         cam = (cam - cam.amin(dim=(2,3), keepdim=True)) / (cam.amax(dim=(2,3), keepdim=True) - cam.amin(dim=(2,3), keepdim=True) + 1e-12)
+#         return cam
+##############################################################################################################################################
+##############################################################################################################################################
+
+class HookManager:
+    def __init__(self, model: torch.nn.Module, layer_name: str):
+        modules = dict(model.named_modules())
+        if layer_name not in modules:
+            raise KeyError(f"Layer name '{layer_name}' not found in model.named_modules()")
+        #log.info(f"HookerManager using {layer_name}.")
+        self.module = modules[layer_name]
         self.activations = None
         self.gradients = None
+        self._fwd_handle = self.module.register_forward_hook(self._forward_hook)
+        self._grad_handle = None
 
-        self.target_layer.register_forward_hook(self.forward_hook)
-        self.target_layer.register_full_backward_hook(self.backward_hook)
-
-    def forward_hook(self, module, input, output):
-        self.activations = output
-
-    def backward_hook(self, module, grad_input, grad_output):
-        self.gradients = grad_output[0]
-
-    def generate(self, target_size):
-        w = self.gradients.mean(dim=(2,3), keepdim=True)             # [B,C,1,1]
-        cam = (w * self.activations).sum(dim=1, keepdim=True).relu() # [B,1,H,W]
-        cam = F.interpolate(cam, size=target_size, mode='bilinear', align_corners=False)
-        cam = (cam - cam.amin(dim=(2,3), keepdim=True)) / (cam.amax(dim=(2,3), keepdim=True) - cam.amin(dim=(2,3), keepdim=True) + 1e-12)
-        return cam
+    def _forward_hook(self, module, inp, out):
+        self.activations = out
+        self.gradients=None
         
-        weights = torch.mean(self.gradients, keepdim=True, dim=(2, 3))
-        grad_cam = torch.sum(weights * self.activations, dim=1, keepdim=True)
-        grad_cam = F.relu(grad_cam)
-        grad_cam = F.interpolate(grad_cam, size=target_size, mode='bilinear', align_corners=False)
-        grad_cam = (grad_cam - grad_cam.min()) / (grad_cam.max() - grad_cam.min() + 1e-12)
-        return grad_cam.squeeze().detach().cpu().numpy()
+        if out.requires_grad:
+            def _save_grad(grad):
+                self.gradients = grad
+            if self._grad_handle is not None:
+                try: self._grad_handle.remove()
+                except Exception: pass
+            self._grad_handle = out.register_hook(_save_grad)
+
+    def remove(self):
+        try:
+            self._fwd_handle.remove()
+        except Exception:
+            pass
+        if self._grad_handle is not None:
+            try: self._grad_handle.remove()
+            except Exception: pass
+
+def compute_gradcam_from_acts_grads(
+        acts: torch.Tensor, grads: torch.Tensor,
+        upsample_to: Optional[Tuple[int,int]] = None,
+        normalize: bool = True) -> torch.Tensor:
+    """Compute Grad-CAM from activations and gradients."""
+    weights = grads.mean(dim=(2,3), keepdim=True)
+    cam = F.relu((weights * acts).sum(dim=1, keepdim=True))
+    if normalize:
+        cam_min, cam_max = cam.amin(dim=(2,3), keepdim=True), cam.amax(dim=(2,3), keepdim=True)
+        cam = (cam - cam_min) / (cam_max - cam_min + 1e-12)
+    if upsample_to:
+        cam = F.interpolate(cam, size=upsample_to, mode='bilinear', align_corners=False)
+    return cam.squeeze(1)
 
 def gradcam_from_activations(acts: torch.Tensor, target_scalar: torch.Tensor, upsample_to_hw=None, normalize=True):
     # Gradiente dL/dA_k
@@ -372,15 +418,16 @@ class VGGGroundBranch(nn.Module):
         self.conv_extra1 = Conv2dSameTF(images_params["max_width"], int(images_params["max_width"]/2), kernel_size=3, stride=(2, 1),bias=True)
         self.conv_extra2 = Conv2dSameTF(int(images_params["max_width"]/2), int(images_params["max_width"]/8), kernel_size=3, stride=(2, 1),bias=True)
         self.conv_extra3 = Conv2dSameTF(int(images_params["max_width"]/8), int(images_params["max_width"]/32), kernel_size=3, stride=(1, 1),bias=True)
-        
         self.relu = nn.ReLU(inplace=True)
         
-        self.target_layer_name = gradcam_config["target_layer"]
-        self.target_acts=None
-        target_layer = dict([*self.named_modules()])[self.target_layer_name]     
-        def _save_acts(module,inp,out):
-            self.target_acts=out
-        target_layer.register_forward_hook(_save_acts)
+        # self.target_layer_name = gradcam_config["target_layer"]
+        # self.target_acts=None
+        # target_layer = dict([*self.named_modules()])[self.target_layer_name]     
+        # def _save_acts(module,inp,out):
+        #     self.target_acts=out
+        #     if out.requires_grad:
+        #         out.retain_grad()
+        # target_layer.register_forward_hook(_save_acts)
 
     def forward(self, x):
         #log.debug("Forward pass through VGGGroundBranch...")
@@ -440,12 +487,14 @@ class VGGSatelliteBranch(nn.Module):
         self.conv_extra3 = nn.Conv2d(int(images_params["max_width"]/8), int(images_params["max_width"]/64), kernel_size=3, stride=(1, 1), padding="valid")
         self.relu = nn.ReLU(inplace=True)
         
-        self.target_layer_name = gradcam_config["target_layer"]
-        self.target_acts=None
-        target_layer = dict([*self.named_modules()])[self.target_layer_name]
-        def _save_acts(module,inp,out):
-            self.target_acts=out
-        target_layer.register_forward_hook(_save_acts)
+        # self.target_layer_name = gradcam_config["target_layer"]
+        # self.target_acts=None
+        # target_layer = dict([*self.named_modules()])[self.target_layer_name]
+        # def _save_acts(module,inp,out):
+        #     self.target_acts=out
+        #     if out.requires_grad:
+        #         out.retain_grad()
+        # target_layer.register_forward_hook(_save_acts)
 
     def warp_pad_columns(self, x, n=1):
         """
@@ -510,7 +559,7 @@ class GroundToAerialMatchingModel(nn.Module):
         # Feature processor
         self.processor = ProcessFeatures()
 
-    def forward(self, ground_img, polar_sat_img, segmap_img,return_target_acts=False):
+    def forward(self, ground_img, polar_sat_img, segmap_img):
         # Extract features from each branch
         #log.debug("Forward pass through GroundToAerialMatchingModel...")
         #log.debug(f"Ground image shape: {ground_img.shape}")
@@ -541,11 +590,6 @@ class GroundToAerialMatchingModel(nn.Module):
         #log.debug("Output values after processing features:")
         #log.debug(f"sat_matrix values: {sat_matrix[0,0,0,:5]}")
         #log.debug(f"grd_matrix values: {grd_matrix[0,0,0,:5]}")
-        
-        if return_target_acts:
-            grd_acts=self.ground_branch.target_acts
-            sat_acts=self.satellite_branch.target_acts
-            return sat_matrix, grd_matrix, distance, pred_orien, grd_acts, sat_acts
         
         #log.debug(f"Final pred sat_matrix shape: {sat_matrix.shape}")
         #log.debug(f"Final pred grd_matrix shape: {grd_matrix.shape}")

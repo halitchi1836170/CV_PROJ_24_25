@@ -12,19 +12,19 @@ torch.backends.cudnn.enabled = False
 torch.backends.cudnn.benchmark = False
 from tqdm import tqdm
 from Data import InputData
-from Globals import folders_and_files, config, images_params, experiments_config,gradcam_config,BLOCKING_COUNTER
-from Network import GroundToAerialMatchingModel,GradCAM,compute_saliency_loss,gradcam_from_activations,saliency_variability_loss
+from Globals import folders_and_files, config, images_params, experiments_config,BLOCKING_COUNTER
+from Network import GroundToAerialMatchingModel
 from Train import validate_original
 import shutil
 from Utils import get_header_title
 from insertion_deletion_eval import insertion_test,deletion_test,plot_insertion_deletion_curves
-
+from attribution_fidelity_eval import attribution_fidelity_test,plot_af_results
 
 EXPERIMENTS = {
     "BASE": {"use_attention": False, "remove_sky": False},
-    #"ATTENTION": {"use_attention": True, "remove_sky": False},
-    #"SKYREMOVAL": {"use_attention": False, "remove_sky": True},
-    #"FULL": {"use_attention": True, "remove_sky": True},
+    "ATTENTION": {"use_attention": True, "remove_sky": False},
+    "SKYREMOVAL": {"use_attention": False, "remove_sky": True},
+    "FULL": {"use_attention": True, "remove_sky": True},
 }
 
 from logger import log
@@ -172,12 +172,16 @@ def find_checkpoints(root: str) -> List[str]:
             log.info(f"Experiment folder: {exp_dir} not in dictionary of possible experiments...")
     return checkpoints
 
-def evaluate_checkpoint(ckpt_path, batch_size, grd_FOV, grd_noise, run_insertion_deletion=True):
+def evaluate_checkpoint(ckpt_path, batch_size, grd_FOV, grd_noise, run_insertion_deletion=True, run_af_test=True):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     log.info(f"Loading checkpoint: {ckpt_path}")
     model = GroundToAerialMatchingModel().to(device)
     checkpoint = torch.load(ckpt_path, map_location=device)
     model.load_state_dict(checkpoint["model_state_dict"])
+    
+    #for layer in model.named_modules():
+    #    log.info(f"layer: {layer}")
+    
     log.info("Model loaded:")
     log.info(f"Model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad)}")
     log.info(f"Model loss vaulue: {checkpoint.get('loss', 'N/A')}")
@@ -192,7 +196,7 @@ def evaluate_checkpoint(ckpt_path, batch_size, grd_FOV, grd_noise, run_insertion
     # Logs folder
     local_logs_folder = os.path.join(folders_and_files["log_folder"],"EVALUATION",""f"{name}")
     eval_loss_path = os.path.join(local_logs_folder, f"{name}_eval_losses.npy")
-    local_plots_folder = os.path.join(folders_and_files["log_folder"],"EVALUATION",""f"{name}")
+    local_plots_folder = os.path.join(folders_and_files["plots_folder"],"EVALUATION",""f"{name}")
     
     shutil.rmtree(local_logs_folder,ignore_errors=True)
     os.makedirs(local_logs_folder,exist_ok=True)
@@ -232,10 +236,11 @@ def evaluate_checkpoint(ckpt_path, batch_size, grd_FOV, grd_noise, run_insertion
     eval_batch_losses = []
     counter = 0
     data.__cur_id = 0
+    af_results = 0
     
     model.eval()
     
-    log.info(f"Started Evaluation...")
+    log.info(get_header_title(f"STARTING EVALUATION",new_line=True))
         
     while True:
         
@@ -243,7 +248,7 @@ def evaluate_checkpoint(ckpt_path, batch_size, grd_FOV, grd_noise, run_insertion
             log.info("Breaking...")
             break
         
-        log.info(f"Batch: {counter+1}/{int(n_test_samples/batch_size)}")
+        #log.info(f"Batch: {counter+1}/{int(n_test_samples/batch_size)}")
         batch_sat_polar, batch_sat, batch_grd, batch_segmap, batch_orien = data.next_batch_scan(batch_size, grd_noise=grd_noise, FOV=grd_FOV)
         
         if batch_sat is None:
@@ -255,13 +260,13 @@ def evaluate_checkpoint(ckpt_path, batch_size, grd_FOV, grd_noise, run_insertion
         seg = torch.from_numpy(batch_segmap).float().to(device)
         
         with torch.no_grad():
-            log.info(f"Inferencing...")
+            #log.info(f"Inferencing...")
             sat_mat, grd_mat, distance, _ = model(grd, sat_polar, seg)
             loss_value = compute_triplet_loss(distance,batch_size,loss_weight=config["loss_weight"])
             total_loss_batch = loss_value
             batch_loss = total_loss_batch.item()    
         
-        log.info("Updating matrix for descriptors...")    
+        #log.info("Updating matrix for descriptors...")    
         sat_global_matrix[val_i:val_i+sat_mat.shape[0],:]=sat_mat.cpu().detach().numpy()
         grd_global_matrix[val_i:val_i+grd_mat.shape[0],:]=grd_mat.cpu().detach().numpy()
         orientation_gth[val_i:val_i+grd_mat.shape[0]]=batch_orien
@@ -270,7 +275,7 @@ def evaluate_checkpoint(ckpt_path, batch_size, grd_FOV, grd_noise, run_insertion
         val_i += sat_mat.shape[0]
         counter += 1
     
-    log.info(f"Evaluation terminated, calculating metrics...")
+    log.info(get_header_title(f"EVALUATION TERMINATED",new_line=True))
         
     sat_descriptor = np.reshape(sat_global_matrix[:,:,:g_width,:],[-1,g_height*g_width*g_channel])
     norm = np.linalg.norm(sat_descriptor, axis=-1, keepdims=True)
@@ -281,6 +286,7 @@ def evaluate_checkpoint(ckpt_path, batch_size, grd_FOV, grd_noise, run_insertion
     top1_percent_value = int(data_amount*0.01)+1
     dist_array = 2.0-2.0*np.matmul(grd_descriptor,np.transpose(sat_descriptor))
     
+    val_accuracy_unperturbed = validate_original(dist_array,1)
     val_accuracy = validate_original(dist_array,1)*100.0 
     r5_epoch = validate_original(dist_array,5)*100.0
     r10_epoch = validate_original(dist_array,10)*100.0
@@ -345,7 +351,33 @@ def evaluate_checkpoint(ckpt_path, batch_size, grd_FOV, grd_noise, run_insertion
             individual_plot_path
         )
         
-    return cmc_dist_array,insertion_deletion_results
+    if run_af_test:
+        # Attribution Fidelity Test
+        log.info(get_header_title("ATTRIBUTION FIDELITY TEST", new_line=True))
+        af_save_path = os.path.join(local_plots_folder, f"{name}_attribution_fidelity_results.npy")
+        af_results = attribution_fidelity_test(
+            experiment_name=name,
+            model=model,
+            unperturbed_accuracy=val_accuracy_unperturbed,
+            data=data,
+            device=device,
+            batch_size=batch_size,
+            grd_FOV=grd_FOV,
+            grd_noise=grd_noise,
+            perturbation_pct=0.05,  # 2% of pixels
+            noise_mean=0.0,
+            noise_std=0.8,
+            save_path=af_save_path,
+            num_examples_to_save=10
+        )
+        log.info(get_header_title("END ATTRIBUTION FIDELITY TEST", new_line=True))
+    
+        # Plot individual AF results
+        if af_results:
+            individual_af_plot_path = os.path.join(local_plots_folder, f"{name}_attribution_fidelity.png")
+            plot_af_results({name: af_results}, individual_af_plot_path)
+        
+    return cmc_dist_array,insertion_deletion_results, af_results
     
 def main():
     parser = argparse.ArgumentParser(description="Evaluation for Ground-Aerial matching model")
@@ -353,7 +385,8 @@ def main():
     parser.add_argument("--batch_size", type=int, default=config["batch_size"], help="Batch size for inference")
     parser.add_argument("--grd_FOV", type=int, default=config["test_grd_FOV"] or 360)
     parser.add_argument("--grd_noise", type=int, default=0)
-    parser.add_argument("--skip_insertion_deletion", action="store_true", help="Skip insertion/deletion tests", default=False)
+    parser.add_argument("--skip_insertion_deletion", help="Skip insertion/deletion tests", default=True)
+    parser.add_argument("--skip_attribution_fidelity", help="Skip attribution fidelity tests", default=False)
     args = parser.parse_args()    
     
     EXPERIMENT_NAMES = list(EXPERIMENTS.keys())
@@ -376,20 +409,25 @@ def main():
     
     all_cmc_dist_array = {}
     all_insertion_deletion_results={}
+    all_af_results = {}
     
     for ckpt in checkpoints:
-        cmc_dist_array,insertion_deletion_results = evaluate_checkpoint(
+        cmc_dist_array,insertion_deletion_results, af_results = evaluate_checkpoint(
             ckpt,
             batch_size=args.batch_size,
             grd_FOV=args.grd_FOV,
             grd_noise=args.grd_noise,
-            run_insertion_deletion=not args.skip_insertion_deletion
+            run_insertion_deletion=not args.skip_insertion_deletion,
+            run_af_test=not args.skip_attribution_fidelity
         )
         checkpoint_experiment_name = os.path.basename(os.path.dirname(os.path.dirname(ckpt)))
         all_cmc_dist_array[checkpoint_experiment_name] = cmc_dist_array
 
         if insertion_deletion_results:
             all_insertion_deletion_results[checkpoint_experiment_name]=insertion_deletion_results
+            
+        if af_results:
+            all_af_results[checkpoint_experiment_name] = af_results
         
     plot_cmc_curve(os.path.join(folders_and_files["plots_folder"],"ALL_experiments_cmc_curve_dist_array.png"),all_cmc_dist_array)
     
@@ -408,6 +446,20 @@ def main():
                 log.info(f"  Deletion AUC: {results['deletion']['auc']:.4f}")
             if 'insertion' in results:
                 log.info(f"  Insertion AUC: {results['insertion']['auc']:.4f}")
+        log.info(get_header_title("END", new_line=True))
+    
+    if all_af_results:
+        combined_af_plot_path = os.path.join(folders_and_files["plots_folder"],"EVALUATION","ALL_experiments_attribution_fidelity.png")
+        plot_af_results(all_af_results, combined_af_plot_path)
+        
+        # Summary log for AF
+        log.info(get_header_title("ATTRIBUTION FIDELITY SUMMARY"))
+        for exp_name, results in all_af_results.items():
+            log.info(f"\n{exp_name}:")
+            log.info(f"  AF Score: {results['af_score']:.4f}")
+            log.info(f"  Acc (Important Perturbed): {results['acc_important']:.4f}")
+            log.info(f"  Acc (Unimportant Perturbed): {results['acc_unimportant']:.4f}")
+            log.info(f"  Samples processed: {results['num_samples']}")
         log.info(get_header_title("END", new_line=True))
     
 if __name__ == "__main__":

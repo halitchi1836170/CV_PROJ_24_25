@@ -3,12 +3,7 @@ import random
 import numpy as np
 from Globals import data_loader_config, experiments_config
 from logger import log
-try:
-    from sky_removal import remove_sky_from_image
-except ImportError:
-    def remove_sky_from_image(img):
-        print("ECCEZIONE DURANTE IMPORT FUNZIONE remove_sky_from_image")
-        return img
+from sky_removal import remove_sky_from_image
 
 class InputData:
 

@@ -3,10 +3,10 @@ from matplotlib import pyplot as plt
 import torch
 import numpy as np
 from torch import optim
-from Globals import config, folders_and_files, gradcam_config, images_params, experiments_config,previous_models
+from Globals import BLOCKING_COUNTER, config, folders_and_files, images_params, experiments_config,previous_models,gradcam_config
 from logger import log
-from Utils import get_header_title, print_params, get_model_summary_simple, save_overlay_image, plot_iterative_loss, plot_loss_boxplot,save_grd_sat_overlay_image,save_ovarlay_image_for_gif
-from Network import GroundToAerialMatchingModel, compute_triplet_loss, GradCAM, compute_saliency_loss, compute_top1_accuracy,gradcam_from_activations,saliency_variability_loss
+from Utils import get_header_title, print_params, get_model_summary_simple, save_overlay_image,save_grd_sat_overlay_image,save_ovarlay_image_for_gif
+from Network import GroundToAerialMatchingModel, HookManager, compute_gradcam_from_acts_grads, compute_triplet_loss, saliency_variability_loss
 from Data import InputData
 import logging
 import cv2
@@ -248,6 +248,11 @@ def train_model(experiment_name, overrides):
     log.info("Model created, summary: ")
     get_model_summary_simple(model)
     
+    hm_grd_loss = HookManager(model, f"ground_branch.{gradcam_config['saliency_loss_layer']}")
+    
+    hm_grd_vis = HookManager(model, f"ground_branch.{gradcam_config['visualization_layer']}")
+    hm_sat_vis = HookManager(model, f"satellite_branch.{gradcam_config['visualization_layer']}")
+    
     start_epoch=0
     if(previous_models[f"flag_use_last_checkpoint_{experiment_name}"]==True):
         log.info(f"Using last checkpoint model for configuration {experiment_name}")
@@ -358,7 +363,7 @@ def train_model(experiment_name, overrides):
             if iter_count % config["log_frequency"] == 0:
                 log.info(f"BEGINING ITERATION: {iter_count}...")
             
-            if iter_count == -21:
+            if iter_count == BLOCKING_COUNTER:
                 end=True
                 break
             
@@ -389,7 +394,7 @@ def train_model(experiment_name, overrides):
             batch_segmap = torch.from_numpy(batch_segmap).float().to(device)
 
             # Compute correlation and distance matrix
-            sat_matrix, grd_matrix, distance, orien, grd_acts, sat_acts = model(batch_grd, batch_sat_polar, batch_segmap, return_target_acts=True)
+            sat_matrix, grd_matrix, distance, orien = model(batch_grd, batch_sat_polar, batch_segmap)
 
             # Compute the loss
             loss_value = compute_triplet_loss(distance,batch_size=config["batch_size"],loss_weight=config["loss_weight"])
@@ -397,17 +402,20 @@ def train_model(experiment_name, overrides):
             
             
             if experiments_config["use_attention"]:
+                
                 target_scalar = -torch.diag(distance).sum()
-                cam_size = (batch_grd.shape[1], batch_grd.shape[2])
+                target_scalar.backward(retain_graph=True)
+                cam_grd_loss = compute_gradcam_from_acts_grads(hm_grd_loss.activations, hm_grd_loss.gradients, upsample_to=(batch_grd.shape[1], batch_grd.shape[2])).detach()
                 
-                cam_grd = gradcam_from_activations(acts=grd_acts,target_scalar=target_scalar,upsample_to_hw=cam_size,normalize=True) 
-                cam_sat = gradcam_from_activations(acts=sat_acts,target_scalar=target_scalar,upsample_to_hw=cam_size,normalize=True)
+                cam_grd_vis = compute_gradcam_from_acts_grads(hm_grd_vis.activations, hm_grd_vis.gradients, upsample_to=(batch_grd.shape[1], batch_grd.shape[2])).detach()
+                cam_sat_vis = compute_gradcam_from_acts_grads(hm_sat_vis.activations, hm_sat_vis.gradients, upsample_to=(batch_grd.shape[1], batch_grd.shape[2])).detach()
                 
-                cam_grd_log = cam_grd.detach().cpu()
-                cam_sat_log = cam_sat.detach().cpu()
+                cam_grd_log = cam_grd_vis.detach().cpu()
+                cam_sat_log = cam_sat_vis.detach().cpu()
                 
-                sal = saliency_variability_loss(cam_grd)
-                #sal = 0.5 * (saliency_variability_loss(cam_grd) + saliency_variability_loss(cam_sat))
+                model.zero_grad(set_to_none=True)
+                
+                sal = saliency_variability_loss(cam_grd_loss)
                 
                 ema_t += 1
                 ema_trip = ema_beta * ema_trip + (1 - ema_beta) * float(loss_value.item())
@@ -533,6 +541,10 @@ def train_model(experiment_name, overrides):
                 log.info(f"END ITERATION: {iter_count}.")
                     
             iter_count += 1
+        
+        hm_grd_loss.remove()
+        hm_grd_vis.remove()
+        hm_sat_vis.remove()
         
         scheduler.step()
         
